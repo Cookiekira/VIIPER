@@ -28,7 +28,9 @@ func main() {
 	hidOutLog := flag.String("hid-out-log", "", "optional TSV path for HID OUT reports from Steam")
 	hidOutBLEPreview := flag.Bool("hid-out-ble-preview", false, "print derived BLE output payload preview for HID OUT report 0x02")
 	bleInput := flag.Bool("ble-input", false, "subscribe to a real NS2Pro BLE input characteristic and forward it as USB report 0x05")
-	bleInputReport := flag.String("ble-input-report", "05", "BLE input report characteristic to use with --ble-input: 05 or 09")
+	bleInputReport := flag.String("ble-input-report", "09", "BLE input report characteristic to use with --ble-input: 09 by default, or 05 as a fallback")
+	bleInputLog := flag.String("ble-input-log", "", "optional TSV path for raw BLE input notifications")
+	bleInputDecodeLog := flag.String("ble-input-decode-log", "", "optional TSV path for decoded BLE report 0x09 input notifications")
 	bleRumble := flag.Bool("ble-rumble", false, "write Steam HID OUT report 0x02 rumble payloads to a real NS2Pro BLE output characteristic")
 	bleAddress := flag.String("ble-address", "", "optional BLE address to connect for --ble-rumble")
 	bleName := flag.String("ble-name", "Pro Controller", "BLE local-name substring to scan for when --ble-address is empty")
@@ -94,10 +96,12 @@ func main() {
 	if *bleInput {
 		var err error
 		bleInputClient, err = ConnectBLEInput(ctx, BLEInputOptions{
-			Address:      *bleAddress,
-			NameContains: *bleName,
-			Timeout:      *bleScanTimeout,
-			Report:       *bleInputReport,
+			Address:       *bleAddress,
+			NameContains:  *bleName,
+			Timeout:       *bleScanTimeout,
+			Report:        *bleInputReport,
+			RawLogPath:    *bleInputLog,
+			DecodeLogPath: *bleInputDecodeLog,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "BLE input setup failed: %v\n", err)
