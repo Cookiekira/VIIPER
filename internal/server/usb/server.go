@@ -755,7 +755,9 @@ func (s *Server) processSubmit(dev usb.Device, ep uint32, dir uint32, setup []by
 		case usbDescTypeConfiguration:
 			data = s.buildConfigDescriptor(desc)
 		case usbDescTypeString:
-			if s, ok := desc.Strings[dindex]; ok {
+			if raw, ok := desc.RawStrings[dindex]; ok {
+				data = raw
+			} else if s, ok := desc.Strings[dindex]; ok {
 				data = usb.EncodeStringDescriptor(s)
 			}
 		}
@@ -826,16 +828,27 @@ func (s *Server) processSubmit(dev usb.Device, ep uint32, dir uint32, setup []by
 
 func (s *Server) buildConfigDescriptor(desc *usb.Descriptor) []byte {
 	var b bytes.Buffer
+	config := usb.ConfigurationDescriptor{
+		IConfiguration: 0,
+		BMAttributes:   usbConfigAttrBusPowered,
+		BMaxPower:      usbConfigMaxPower100mA,
+	}
+	if desc.Config != nil {
+		config = *desc.Config
+	}
 	h := usb.ConfigHeader{
 		WTotalLength:        0, // to be patched
 		BNumInterfaces:      uint8(len(desc.Interfaces)),
 		BConfigurationValue: usbConfigValueDefault,
-		IConfiguration:      0,
-		BMAttributes:        usbConfigAttrBusPowered,
-		BMaxPower:           usbConfigMaxPower100mA,
+		IConfiguration:      config.IConfiguration,
+		BMAttributes:        config.BMAttributes,
+		BMaxPower:           config.BMaxPower,
 	}
 	h.Write(&b)
 	for _, iface := range desc.Interfaces {
+		if iface.Association != nil {
+			iface.Association.Write(&b)
+		}
 		iface.Descriptor.Write(&b)
 		if iface.HID != nil {
 			hd, err := iface.HID.DescriptorBytes()

@@ -109,7 +109,7 @@ func (vb *VirtualBus) Add(dev usb.Device) (context.Context, error) {
 	copy(meta.USBBusId[:], busDevID)
 	meta.BusId = busID
 	meta.DevId = devID
-	connTimer := time.NewTimer(0)
+	connTimer := newStoppedTimer()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = context.WithValue(ctx, device.ExportMetaKey, &meta)
@@ -117,6 +117,17 @@ func (vb *VirtualBus) Add(dev usb.Device) (context.Context, error) {
 
 	vb.devices = append(vb.devices, busDevice{dev: dev, meta: meta, ctx: ctx, cancel: cancel})
 	return ctx, nil
+}
+
+func newStoppedTimer() *time.Timer {
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	return timer
 }
 
 // GetAllDeviceMetas returns a copy of all registered devices with their descriptors and export metadata.

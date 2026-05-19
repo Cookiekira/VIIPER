@@ -15,6 +15,7 @@ const (
 	ConfigDescType    = 0x02
 	InterfaceDescType = 0x04
 	EndpointDescType  = 0x05
+	IADDescType       = 0x0B
 	HIDDescType       = 0x21
 	ReportDescType    = 0x22
 )
@@ -23,6 +24,7 @@ const (
 const (
 	DeviceDescLen    = 18
 	ConfigDescLen    = 9
+	IADDescLen       = 8
 	InterfaceDescLen = 9
 	EndpointDescLen  = 7
 	HIDDescLen       = 9
@@ -33,12 +35,19 @@ type Data []uint8
 // Descriptor holds all static descriptor/config data for a device.
 type Descriptor struct {
 	Device     DeviceDescriptor
+	Config     *ConfigurationDescriptor
 	Interfaces []InterfaceConfig
 	Strings    map[uint8]string
+	RawStrings map[uint8][]byte
 }
 
 // InterfaceConfig holds all descriptors for a single interface for bus management.
 type InterfaceConfig struct {
+	// Association is emitted before this interface as an Interface Association
+	// Descriptor (IAD, type 0x0B). It is optional and mainly used by composite
+	// devices whose captured descriptors include single-interface functions.
+	Association *InterfaceAssociationDescriptor
+
 	Descriptor InterfaceDescriptor
 	Endpoints  []EndpointDescriptor
 
@@ -54,6 +63,15 @@ type InterfaceConfig struct {
 	// This is also used for vendor-specific interfaces that need to expose opaque
 	// descriptors (e.g. type 0x21 blobs on Xbox360).
 	ClassDescriptors []ClassSpecificDescriptor
+}
+
+// ConfigurationDescriptor contains the configurable fields from the standard
+// USB configuration descriptor header. WTotalLength, bNumInterfaces, and
+// bConfigurationValue are managed by the USB/IP server.
+type ConfigurationDescriptor struct {
+	IConfiguration uint8
+	BMAttributes   uint8
+	BMaxPower      uint8
 }
 
 // EncodeStringDescriptor converts a UTF-8 string to a USB string descriptor byte array.
@@ -132,6 +150,27 @@ func (h ConfigHeader) Write(b *bytes.Buffer) {
 	b.WriteByte(h.BMAttributes)
 	b.WriteByte(h.BMaxPower)
 
+}
+
+// InterfaceAssociationDescriptor is an 8-byte IAD (descriptor type 0x0B).
+type InterfaceAssociationDescriptor struct {
+	BFirstInterface   uint8
+	BInterfaceCount   uint8
+	BFunctionClass    uint8
+	BFunctionSubClass uint8
+	BFunctionProtocol uint8
+	IFunction         uint8
+}
+
+func (i InterfaceAssociationDescriptor) Write(b *bytes.Buffer) {
+	b.WriteByte(IADDescLen)
+	b.WriteByte(IADDescType)
+	b.WriteByte(i.BFirstInterface)
+	b.WriteByte(i.BInterfaceCount)
+	b.WriteByte(i.BFunctionClass)
+	b.WriteByte(i.BFunctionSubClass)
+	b.WriteByte(i.BFunctionProtocol)
+	b.WriteByte(i.IFunction)
 }
 
 // InterfaceDescriptor (9 bytes) for each interface altsetting.
