@@ -1,0 +1,28 @@
+{
+  "startedAt": "2026-05-19T00:53:08.3752672+10:00",
+  "toolKind": "USBPcapCMD",
+  "toolPath": "C:\\Program Files\\USBPcap\\USBPcapCMD.exe",
+  "mergecapPath": "C:\\Program Files\\Wireshark\\mergecap.exe",
+  "interfaces": [
+    "\\\\.\\USBPcap1",
+    "\\\\.\\USBPcap2",
+    "\\\\.\\USBPcap3",
+    "\\\\.\\USBPcap4",
+    "\\\\.\\USBPcap5"
+  ],
+  "outputPcapng": "C:\\Users\\oddc2\\Repo\\VIIPER\\captures\\ns2pro\\ns2pro-usb-20260519-005307\\ns2pro-usb-20260519-005307.pcapng",
+  "rawCaptures": [
+    "C:\\Users\\oddc2\\Repo\\VIIPER\\captures\\ns2pro\\ns2pro-usb-20260519-005307\\raw\\USBPcap1.pcap",
+    "C:\\Users\\oddc2\\Repo\\VIIPER\\captures\\ns2pro\\ns2pro-usb-20260519-005307\\raw\\USBPcap2.pcap",
+    "C:\\Users\\oddc2\\Repo\\VIIPER\\captures\\ns2pro\\ns2pro-usb-20260519-005307\\raw\\USBPcap3.pcap",
+    "C:\\Users\\oddc2\\Repo\\VIIPER\\captures\\ns2pro\\ns2pro-usb-20260519-005307\\raw\\USBPcap4.pcap",
+    "C:\\Users\\oddc2\\Repo\\VIIPER\\captures\\ns2pro\\ns2pro-usb-20260519-005307\\raw\\USBPcap5.pcap"
+  ],
+  "durationSec": 0,
+  "openSteam": true,
+  "dryRun": false,
+  "notes": "Start capture before plugging the wired controller. Use README.txt for Wireshark filters.",
+  "finishedAt": "2026-05-19T00:54:58.6033256+10:00",
+  "pcapExists": true,
+  "pcapBytes": 8515992
+}

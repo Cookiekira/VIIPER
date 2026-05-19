@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device"
-	"github.com/Alia5/VIIPER/device/ns2pro"
 )
 
 func main() {
@@ -23,10 +21,35 @@ func main() {
 	cleanup := flag.Bool("cleanup", true, "remove the virtual device on exit")
 	bulkReplay := flag.Bool("bulk-replay", true, "enable captured bulk init/config replay fixtures")
 	interval := flag.Duration("interval", 4*time.Millisecond, "neutral input report write interval")
+	keyboardMode := flag.Bool("keyboard", false, "poll the local keyboard and map keys to NS2Pro input report 0x05")
+	terminalMode := flag.Bool("terminal", false, "read key presses directly from this terminal and map them to NS2Pro input report 0x05 pulses")
+	terminalPulse := flag.Duration("terminal-pulse", 120*time.Millisecond, "duration to hold each --terminal key press")
+	invertStickY := flag.Bool("invert-stick-y", false, "invert both left and right stick Y axes")
+	hidOutLog := flag.String("hid-out-log", "", "optional TSV path for HID OUT reports from Steam")
+	hidOutBLEPreview := flag.Bool("hid-out-ble-preview", false, "print derived BLE output payload preview for HID OUT report 0x02")
+	bleInput := flag.Bool("ble-input", false, "subscribe to a real NS2Pro BLE input characteristic and forward it as USB report 0x05")
+	bleInputReport := flag.String("ble-input-report", "05", "BLE input report characteristic to use with --ble-input: 05 or 09")
+	bleRumble := flag.Bool("ble-rumble", false, "write Steam HID OUT report 0x02 rumble payloads to a real NS2Pro BLE output characteristic")
+	bleAddress := flag.String("ble-address", "", "optional BLE address to connect for --ble-rumble")
+	bleName := flag.String("ble-name", "Pro Controller", "BLE local-name substring to scan for when --ble-address is empty")
+	bleScanTimeout := flag.Duration("ble-scan-timeout", 12*time.Second, "BLE scan/connect timeout for --ble-rumble")
+	bleWriteWithResponse := flag.Bool("ble-write-with-response", false, "use BLE Write Request instead of Write Without Response")
+	printKeymap := flag.Bool("print-keymap", false, "print the keyboard mapping used by --keyboard")
 	holdA := flag.Bool("hold-a", false, "hold a synthetic A button in dummy input reports")
 	pulseAAfter := flag.Duration("pulse-a-after", 0, "pulse a synthetic A button after this delay; 0 disables")
 	pulseADuration := flag.Duration("pulse-a-duration", 800*time.Millisecond, "synthetic A pulse duration")
 	flag.Parse()
+
+	inputModeCount := 0
+	for _, enabled := range []bool{*keyboardMode, *terminalMode, *bleInput} {
+		if enabled {
+			inputModeCount++
+		}
+	}
+	if inputModeCount > 1 {
+		fmt.Fprintln(os.Stderr, "--keyboard, --terminal, and --ble-input are mutually exclusive")
+		os.Exit(2)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -61,6 +84,53 @@ func main() {
 	fmt.Printf("Created and connected %s device %d-%s (%s:%s)\n", dev.Type, dev.BusID, dev.DevId, dev.Vid, dev.Pid)
 	fmt.Printf("Keep this process running while Steam/Windows uses the virtual controller.\n")
 	fmt.Printf("Attach busid %d-%s from your USBIP GUI when you are ready.\n", dev.BusID, dev.DevId)
+	if *printKeymap || *keyboardMode || *terminalMode {
+		fmt.Print(keymapHelp())
+	}
+	if *keyboardMode {
+		fmt.Printf("Keyboard mode enabled. Polling local keyboard every %s.\n", interval.String())
+	}
+	var bleInputClient *BLEInputClient
+	if *bleInput {
+		var err error
+		bleInputClient, err = ConnectBLEInput(ctx, BLEInputOptions{
+			Address:      *bleAddress,
+			NameContains: *bleName,
+			Timeout:      *bleScanTimeout,
+			Report:       *bleInputReport,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLE input setup failed: %v\n", err)
+			return
+		}
+		defer bleInputClient.Close()
+	}
+	var bleWriter BLEOutputWriter
+	if *bleRumble {
+		ble, err := ConnectBLERumble(ctx, BLERumbleOptions{
+			Address:           *bleAddress,
+			NameContains:      *bleName,
+			Timeout:           *bleScanTimeout,
+			WriteWithResponse: *bleWriteWithResponse,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "BLE rumble setup failed: %v\n", err)
+			return
+		}
+		defer ble.Close()
+		bleWriter = ble
+	}
+	var terminal *terminalInput
+	if *terminalMode {
+		var err error
+		terminal, err = startTerminalInput(ctx, *terminalPulse)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "terminal input setup failed: %v\n", err)
+			return
+		}
+		defer terminal.Close()
+		fmt.Printf("Terminal mode enabled. Press mapped keys in this terminal; Ctrl+C stops.\n")
+	}
 
 	if *cleanup {
 		defer func() {
@@ -75,31 +145,56 @@ func main() {
 		}()
 	}
 
-	go logHIDOutput(stream)
+	go logHIDOutput(stream, HIDOutputLogOptions{
+		Path:       *hidOutLog,
+		BLEPreview: *hidOutBLEPreview,
+		BLEWriter:  bleWriter,
+	})
 
-	report := ns2pro.NeutralInputReport()
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
 	startedAt := time.Now()
-	var frames uint64
+	var frames uint32
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Println("Stopping.")
 			return
+		case <-terminalInterrupt(terminal):
+			fmt.Println("Stopping.")
+			return
 		case <-ticker.C:
 			frames++
-			nextReport := append([]byte(nil), report...)
+			var input ControllerInput
+			var nextReport []byte
+			if bleInputClient != nil {
+				nextReport = bleInputClient.LatestInputReport()
+			}
+			if nextReport == nil && *keyboardMode {
+				keyboardInput, err := pollKeyboardInput()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "keyboard polling failed: %v\n", err)
+					return
+				}
+				input = keyboardInput
+			} else if terminal != nil {
+				input = terminal.Input()
+			}
 			if *holdA || shouldPulse(startedAt, *pulseAAfter, *pulseADuration) {
-				setSyntheticA(nextReport, true)
+				input.A = true
+			}
+			if nextReport == nil {
+				nextReport = BuildInputReportWithOptions(frames, input, ReportOptions{
+					InvertStickY: *invertStickY,
+				})
 			}
 			if _, err := stream.Write(nextReport); err != nil {
 				fmt.Fprintf(os.Stderr, "stream write failed: %v\n", err)
 				return
 			}
 			if frames%250 == 0 {
-				fmt.Printf("Sent %d neutral input reports\n", frames)
+				fmt.Printf("Sent %d NS2Pro input reports\n", frames)
 			}
 		}
 	}
@@ -111,17 +206,6 @@ func shouldPulse(startedAt time.Time, after, duration time.Duration) bool {
 	}
 	elapsed := time.Since(startedAt)
 	return elapsed >= after && elapsed < after+duration
-}
-
-func setSyntheticA(report []byte, pressed bool) {
-	if len(report) < 4 {
-		return
-	}
-	if pressed {
-		report[3] |= 0x01
-		return
-	}
-	report[3] &^= 0x01
 }
 
 func ensureBus(ctx context.Context, client *apiclient.Client, requested uint32) (busID uint32, created bool, err error) {
@@ -151,18 +235,4 @@ func ensureBus(ctx context.Context, client *apiclient.Client, requested uint32) 
 	}
 	fmt.Printf("Created bus %d\n", resp.BusID)
 	return resp.BusID, true, nil
-}
-
-func logHIDOutput(stream *apiclient.DeviceStream) {
-	buf := make([]byte, 64)
-	for {
-		n, err := stream.Read(buf)
-		if err != nil {
-			return
-		}
-		if n == 0 {
-			continue
-		}
-		fmt.Printf("HID OUT %d bytes: %s\n", n, hex.EncodeToString(buf[:n]))
-	}
 }

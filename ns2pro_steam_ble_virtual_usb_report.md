@@ -7,6 +7,62 @@
 
 ---
 
+## 0. 2026-05-19 抓包修正
+
+本报告最初参考公开资料时，曾假设 Switch 2 Pro USB 路径是 `bcdDevice=0x0400`、5-interface audio composite，并且 Steam-visible USB input 可以直接使用 report `0x09`。  
+本仓库后续对这只 NS2 Pro 的真实有线 USB 路径做了 USBPcap 抓包，结论以本地抓包为准：
+
+- 抓包摘要：`captures/ns2pro/ns2pro-usb-20260519-005307/analysis/summary.md`
+- bulk 初始化序列：`captures/ns2pro/ns2pro-usb-20260519-005307/analysis/bulk_nonempty.tsv`
+- 设备身份：`VID=0x057E`、`PID=0x2069`、`bcdDevice=0x0101`
+- configuration：2 interfaces，而不是 5-interface audio composite
+- interface 0：HID，`0x81` interrupt IN + `0x01` interrupt OUT
+- interface 1：vendor bulk，`0x02` OUT + `0x82` IN
+- HID input：实际 Steam-visible 主输入是 report ID `0x05`，64 字节总长
+- HID output / rumble：report ID `0x02`，64 字节总长
+- HID report descriptor：97 bytes，包含 `0x05` 主输入、`0x09` secondary/structured input、`0x02` output
+
+因此当前实现优先级修正为：
+
+```text
+USB 侧:
+  复刻本地抓包中的 2-interface descriptor
+  EP 0x81 返回 report 0x05
+  EP 0x01 接收 report 0x02
+  EP 0x02 / 0x82 做 captured bulk replay
+
+BLE 侧:
+  不再假设 BLE report 0x09 可以直接补 0x09 给 Steam
+  后续需要 BLE state/report → USB report 0x05 转换
+  或确认存在可直接映射到 USB 0x05 payload 的 BLE input characteristic
+```
+
+### 0.1 2026-05-19 VIIPER 验证进展
+
+当前 fork 中的 `device/ns2pro` 已经按本地抓包复刻了 2-interface descriptor、HID report descriptor、neutral input report `0x05` 和 bulk replay。`examples/go/virtual_ns2pro` 已新增键盘/终端 feeder，用于验证 Steam 是否能收到 `0x05` 输入：
+
+```text
+go run ./examples/go/virtual_ns2pro --terminal --bulk-replay=true
+go run ./examples/go/virtual_ns2pro --keyboard --bulk-replay=true
+```
+
+实测结论：
+
+```text
+Steam 能识别虚拟 NS2Pro / Nintendo Switch Pro Controller 路径
+A/B/X/Y、D-pad、左右摇杆、肩键、系统键可反映到 Steam
+GL/GR/C 可反映到 Steam；终端/键盘 feeder 提供 O/P/8/9/C/V 等兼容别名
+左右摇杆 Y 轴默认 W/T=上、S/G=下；如目标 UI/游戏方向相反，可加 --invert-stick-y
+```
+
+下一步从 Steam → 设备方向验证：捕获 HID OUT report `0x02`，确认 Steam rumble test 的输出包，并预览/落盘后续可桥到 BLE output characteristic 的 payload。
+
+```text
+go run ./examples/go/virtual_ns2pro --terminal --bulk-replay=true --hid-out-ble-preview --hid-out-log rumble.tsv
+```
+
+---
+
 ## 1. 结论摘要
 
 ### 1.1 最推荐方案
@@ -20,7 +76,8 @@ NS2 Pro / Switch 2 Pro Controller
         ▼
 Go BLE client
         │
-        │ report 0x09 / output 0x02 / config commands
+        │ BLE input state/report → USB report 0x05
+        │ output 0x02 / config commands
         ▼
 VIIPER fork: NS2Pro device type
         │
@@ -37,8 +94,8 @@ Steam Input
 
 1. **不要把 NS2 Pro 翻译成 XInput / DS4 / SInput。**
 2. **不要只做普通 HID。**
-3. **直接模拟 Switch 2 Pro Controller 的 USB composite device。**
-4. **BLE input report 0x09 尽量原样透传给 Steam。**
+3. **直接模拟本地抓包确认的 2-interface NS2 Pro USB composite device。**
+4. **Steam-visible USB input 优先生成 report 0x05，而不是直接透传 BLE report 0x09。**
 5. **Steam 发出的 HID output report 0x02 尽量转发回 BLE output characteristic。**
 6. **Steam 通过 vendor bulk configuration interface 发来的 init / feature / sensor / calibration 命令，先记录，后逐步本地响应或转发给 BLE 手柄。**
 
@@ -63,20 +120,20 @@ Added support for Nintendo Switch 2 controllers connected over USB on Windows
 Steam 侧：必须看起来像 USB 有线 Switch 2 Pro Controller
 ```
 
-### 2.2 Switch 2 Pro Controller 是 USB composite device
+### 2.2 本地抓包确认的 NS2 Pro USB composite device
 
-公开 reverse engineering 资料中，Pro Controller 2 的 USB device descriptor 关键字段为：
+本地 USBPcap 抓包中，这只 NS2 Pro 的 USB device descriptor 关键字段为：
 
 ```text
 VID: 0x057E
 PID: 0x2069
-bcdDevice: 0x0400
+bcdDevice: 0x0101
 Manufacturer: Nintendo
-Product: Switch 2 Pro Controller
-bNumInterfaces: 5
+Product: Pro Controller
+bNumInterfaces: 2
 ```
 
-最关键的 interfaces：
+interfaces：
 
 ```text
 Interface 0: HID
@@ -86,17 +143,15 @@ Interface 0: HID
 Interface 1: vendor-specific configuration
   EP 0x02 bulk OUT
   EP 0x82 bulk IN
-
-Interface 2/3/4:
-  Audio control / audio streaming related descriptors
 ```
 
 工程含义：
 
 ```text
 不能只模拟 HID。
-至少要提供 interface 0 + interface 1。
-audio interfaces 第一版可以先 descriptor stub，但最好保留真实 descriptor 轮廓。
+必须提供 interface 0 + interface 1。
+不应为这只设备优先实现 earlier public notes 里的 audio interfaces。
+USB input report 主路径是 0x05。
 ```
 
 ### 2.3 Linux patch 和 SDL 都指向 split-interface 设计
@@ -177,8 +232,8 @@ viiper ns2pro
 2. 创建虚拟 NS2Pro USB composite device
 3. 自动 attach 到本机 usbip-win2
 4. 扫描并连接 NS2 Pro BLE 手柄
-5. 订阅 BLE input report 0x09
-6. 将 BLE input 转为 USB HID interrupt IN
+5. 订阅 BLE input report/state
+6. 将 BLE input 转为 USB HID report 0x05 interrupt IN
 7. 将 Steam HID output 0x02 转为 BLE output report
 8. 记录并响应 Steam bulk configuration commands
 ```
@@ -189,20 +244,20 @@ viiper ns2pro
 VIIPER fork
 ├─ device/
 │  └─ ns2pro/
-│     ├─ descriptor.go       # USB device/config/HID/audio descriptors
+│     ├─ descriptor.go       # USB device/config/HID descriptors
 │     ├─ hid_report.go       # HID report descriptor / report constants
 │     ├─ device.go           # HandleTransfer / HandleControl
 │     ├─ bridge.go           # USB endpoint ↔ BLE channel
 │     ├─ commands.go         # bulk config command parser/responder
 │     ├─ rumble.go           # USB output 0x02 → BLE output 0x02
-│     └─ neutral_report.go   # 空闲 input report 0x09
+│     └─ neutral_report.go   # 空闲 input report 0x05
 │
 ├─ internal/
 │  └─ ns2ble/
 │     ├─ scan.go             # 扫描 / 选择 / 重连
 │     ├─ client.go           # BLE client 生命周期
 │     ├─ gatt.go             # service/characteristic discovery
-│     ├─ input.go            # input report 0x09 notification
+│     ├─ input.go            # BLE input notification → USB 0x05
 │     ├─ output.go           # output report 0x02 write
 │     ├─ feature.go          # feature enable / IMU enable
 │     └─ debug_parse.go      # 可选 debug parser
@@ -223,9 +278,9 @@ VIIPER fork
 ```text
 idVendor:  0x057E
 idProduct: 0x2069
-bcdDevice: 0x0400
+bcdDevice: 0x0101
 Manufacturer: Nintendo
-Product: Switch 2 Pro Controller
+Product: Pro Controller
 ```
 
 注意：这适合个人研究和本机测试。公开分发时直接使用 Nintendo VID/PID/Product string 可能涉及 USB VID 授权、商标和兼容性风险。若要公开发布，最好换成自有 VID/PID，并争取 Steam 加白名单；但这样会影响 Steam 原生识别验证。
@@ -254,8 +309,9 @@ Endpoint 0x01:
 
 ```text
 Input report:
-  report ID 0x09
-  total USB payload: [0x09][63-byte report payload]
+  report ID 0x05
+  total USB payload: [0x05][63-byte report payload]
+  当前抓包中，Steam-visible HID IN 主要都是 0x05
 
 Output report:
   report ID 0x02
@@ -296,16 +352,10 @@ EP 0x82 IN:
   没有响应时返回 NAK/空等待，具体按 VIIPER/USBIP 能力实现
 ```
 
-### 5.4 Interface 2/3/4: audio stub
+### 5.4 Interface 2/3/4: 暂不实现
 
-Pro Controller 2 descriptor 中包含 audio 相关 interfaces。第一版可以：
-
-```text
-1. 尽量复刻真实 descriptors
-2. 不实现实际 audio streaming
-3. EP0 对 audio class-specific requests 先记录
-4. 如果 Windows 枚举失败，再补最小合法响应
-```
+本地抓包中的这只 NS2 Pro 有线 USB 路径没有暴露 earlier public notes 中的 audio interfaces。  
+因此第一版不实现 interface 2/3/4，也不做 audio stub。若后续遇到另一版固件或另一只设备枚举出 5-interface audio composite，再作为单独 descriptor variant 处理。
 
 ---
 
@@ -334,42 +384,52 @@ Output report 0x02 characteristic:
 
 ```text
 BLE report payload 不带 HID report ID。
-USB/HID 侧需要 report ID。
+USB/HID 侧需要 report ID，但本地抓包确认 Steam-visible 主输入是 USB report 0x05。
 ```
 
-因此输入桥接是：
+因此旧的输入桥接假设不再成立：
 
 ```text
 BLE notification:
   [63-byte payload]
 
-USB HID input report:
+不要直接当作 Steam-visible USB HID input:
   [0x09][63-byte payload]
 ```
 
-### 6.2 BLE input 第一版不要完整解析
+当前 MVP 应先做：
 
-第一版不要做：
+```text
+键盘输入 / 未来 BLE parsed state
+        ▼
+USB HID input report 0x05
+        ▼
+Steam Input
+```
+
+### 6.2 BLE input 第一版需要转换成 USB 0x05
+
+旧建议是不要做：
 
 ```text
 BLE report → buttons/axes/gyro normalized state → 重新组包
 ```
 
-而要做：
+但本地抓包修正后，不能再做：
 
 ```text
 BLE report → 补 report ID → 原样给 Steam
 ```
 
-原因：
+原因是：
 
 ```text
-1. Steam 已经有 Switch 2 Pro 原生 parser
-2. 原始 report 能保留 GL/GR/C、NFC/headset state、motion data 等字段
-3. 避免因重组 report 出错导致 Steam 识别异常
+1. Steam 在这只 NS2 Pro USB 路径上看到的是 report 0x05
+2. 真实 HID IN 抓包中，非空 input reports 主要都是 0x05
+3. BLE report 0x09 不能直接补 0x09 当 USB 输入给 Steam
 ```
 
-解析只用于 debug log，例如：
+因此第一版输入验证先从键盘生成 USB report 0x05；后续 BLE 阶段需要确认 BLE 侧是否有等价 0x05 payload，或将 BLE state 转换为 USB 0x05 layout。解析/日志仍可用于 debug，例如：
 
 ```text
 counter
@@ -408,25 +468,17 @@ C#: WinRT BLE pairing/helper
 
 但第一版建议坚持 all-Go。
 
-### 6.4 BLE input normalization 伪代码
+### 6.4 USB 0x05 input normalization 伪代码
 
 ```go
-func NormalizePro2Input09(ble []byte) ([]byte, bool) {
-    if len(ble) == 63 {
-        usb := make([]byte, 64)
-        usb[0] = 0x09
-        copy(usb[1:], ble)
-        return usb, true
-    }
-
-    // 容错：有些层可能已经带 report ID
-    if len(ble) == 64 && ble[0] == 0x09 {
-        usb := make([]byte, 64)
-        copy(usb, ble)
-        return usb, true
-    }
-
-    return nil, false
+func BuildUSBInput05(state NS2InputState) []byte {
+    usb := NeutralInputReport05()
+    usb[0] = 0x05
+    binary.LittleEndian.PutUint32(usb[1:5], state.Counter)
+    encodeButtons05(usb[5:9], state.Buttons)
+    encodeStick12(usb[11:14], state.LeftStick)
+    encodeStick12(usb[14:17], state.RightStick)
+    return usb
 }
 ```
 
@@ -595,7 +647,7 @@ type NS2ProDevice struct {
 
     ble *ns2ble.Client
 
-    latestInput atomic.Value // []byte, 64 bytes: [0x09][63-byte payload]
+    latestInput atomic.Value // []byte, 64 bytes: [0x05][63-byte payload]
 
     bulkIn chan []byte
     log    Logger
@@ -609,7 +661,7 @@ func (d *NS2ProDevice) HandleTransfer(ep uint32, dir uint32, out []byte) []byte 
     switch {
     case ep == 1 && dir == usbip.DirIn:
         // Host polling HID interrupt IN 0x81.
-        return d.getLatestOrNeutralInputReport()
+        return d.getLatestOrNeutralInputReport05()
 
     case ep == 1 && dir == usbip.DirOut:
         // Host wrote HID interrupt OUT 0x01.
@@ -660,8 +712,8 @@ func (d *NS2ProDevice) HandleControl(
 func (d *NS2ProDevice) AttachBLE(c *ns2ble.Client) {
     go func() {
         for report := range c.InputReports {
-            // report 已是 USB HID 格式：[0x09][payload]
-            d.latestInput.Store(report)
+            // 后续应存储转换后的 USB HID 0x05 report：[0x05][payload]
+            d.latestInput.Store(convertBLEToUSBInput05(report))
         }
     }()
 }
@@ -699,7 +751,7 @@ NS2 Pro / Switch 2 Pro Controller
 2. Steam 打开设备时的 bulk OUT / bulk IN
 3. Steam rumble test 时 HID OUT report 0x02
 4. Steam gyro enable 时 bulk commands
-5. input report 0x09 的空闲帧
+5. input report 0x05 的空闲帧
 ```
 
 ### Phase 1: dummy virtual USB device
@@ -711,8 +763,8 @@ NS2 Pro / Switch 2 Pro Controller
 ```text
 1. fork VIIPER
 2. 新增 device/ns2pro
-3. 复刻 Pro Controller 2 USB descriptors
-4. EP 0x81 返回 neutral input report 0x09
+3. 复刻本地抓包中的 2-interface descriptors
+4. EP 0x81 返回 neutral input report 0x05
 5. EP 0x01 / 0x02 / 0x82 / EP0 全量日志
 ```
 
@@ -746,6 +798,33 @@ rumble test 能触发 HID OUT 0x02
 gyro UI 至少显示 sensor capability
 ```
 
+### Phase 2.5: keyboard / terminal USB 0x05 input verification
+
+目标：不接 BLE，先证明 Steam 能正确接收 feeder 生成的 USB input report `0x05`。
+
+实现：
+
+```text
+1. 扩展 examples/go/virtual_ns2pro
+2. --keyboard 用 Windows GetAsyncKeyState 轮询键盘
+3. --terminal 从当前终端 raw mode 读取 keypress 并生成短脉冲
+4. 基于 neutral 0x05 report 写入 counter、button bytes、12-bit sticks
+5. 支持 --invert-stick-y 处理目标 UI/游戏中的 Y 轴方向差异
+```
+
+验收：
+
+```text
+A/B/X/Y 正常
+D-pad 正常
+左右摇杆正常
+L/R/ZL/ZR、Plus/Minus/Home/Capture 正常
+GL/GR/C 正常
+Steam controller test UI 能显示对应状态
+```
+
+当前状态：已完成并通过 Steam 人工验证。
+
 ### Phase 3: BLE input
 
 目标：真实手柄输入进入 Steam。
@@ -754,9 +833,9 @@ gyro UI 至少显示 sensor capability
 
 ```text
 1. Go BLE scan / connect
-2. 找到 characteristic 7492866c-ec3e-4619-8258-32755ffcc0f8
+2. 找到真实 NS2 Pro input characteristic
 3. Enable notifications
-4. 收到 63-byte BLE payload 后补 0x09
+4. 将 BLE report/state 转换成 USB input report 0x05
 5. 写入 latestInput
 ```
 
@@ -770,23 +849,26 @@ GL/GR/C 正常
 Steam 能绑定扩展键
 ```
 
-### Phase 4: rumble bridge
+### Phase 4: rumble capture / bridge
 
-目标：Steam rumble test 让真实 NS2 Pro 震动。
+目标：先确认 Steam rumble test 产生 HID OUT report `0x02`，再桥到真实 NS2 Pro BLE output 让手柄震动。
 
 实现：
 
 ```text
-1. 监听 EP 0x01 OUT
-2. 识别 report 0x02
-3. 转成 BLE output 0x02 payload
-4. 写 cc483f51-9258-427d-a939-630c31f72b05
+1. 监听 EP 0x01 OUT，并在 feeder 侧记录 HID OUT report
+2. 识别 report 0x02，记录 hex 和 left/right LRA 是否非零
+3. 预览 USB 0x02 → BLE output payload：0x00 + left 16 bytes + right 16 bytes + reserved 9 bytes
+4. 后续接入 BLE 后写 cc483f51-9258-427d-a939-630c31f72b05
 ```
 
 验收：
 
 ```text
-Steam rumble test 时 BLE write 发生
+Steam rumble test 时 feeder 收到 HID OUT 0x02
+HID OUT 可以落盘为 TSV，便于与抓包样本对比
+`--hid-out-ble-preview` 能打印待写入 BLE output characteristic 的 payload 预览
+接入 BLE 后，Steam rumble test 时 BLE write 发生
 NS2 Pro 实际震动
 停止 rumble 后能停止震动
 长时间 rumble 不堆积、不延迟
@@ -840,8 +922,8 @@ rumble 不影响 input latency
 
 ```text
 VID/PID 是否 057E:2069
-Product string 是否 Switch 2 Pro Controller
-configuration descriptor 是否 5 interfaces
+Product string 是否 Pro Controller
+configuration descriptor 是否 2 interfaces
 interface 0 HID report descriptor 是否正确
 interface 1 vendor bulk 是否存在
 EP0 GET_DESCRIPTOR 是否完整响应
@@ -853,9 +935,9 @@ EP0 GET_DESCRIPTOR 是否完整响应
 
 ```text
 EP 0x81 是否被 host 轮询
-返回 report 是否是 [0x09][63 bytes]
+返回 report 是否是 [0x05][63 bytes]
 neutral report 长度是否 64
-BLE payload 是否被错误地二次加 report ID
+BLE payload 是否被错误地直接作为 0x09 USB report 转发
 ```
 
 ### 有输入但没有 GL/GR/C
@@ -863,7 +945,7 @@ BLE payload 是否被错误地二次加 report ID
 检查：
 
 ```text
-是否原样透传 report 0x09
+是否正确生成 USB report 0x05 的 button bytes
 是否错误改写 button bytes
 是否 Steam 进入了 Switch 2 Pro path 而不是 generic HID path
 ```
@@ -888,7 +970,7 @@ BLE output characteristic 是否正确
 Steam 是否发 sensor enable / feature select 0x0C
 bulk init replay 是否完整
 flash calibration reads 是否返回合理数据
-BLE report 0x09 offset 0x0E motion length 是否为 30/40
+USB report 0x05 / 后续 BLE 转换后的 motion bytes 是否有效
 是否启用了 IMU feature flag 0x04
 ```
 
@@ -945,7 +1027,7 @@ Go 主进程负责 VIIPER 和已配对设备连接
 
 ```text
 1. Steam 识别为 Switch 2 Pro Controller
-2. BLE 真实输入能进 Steam
+2. 键盘生成的 USB report 0x05 输入能进 Steam，后续 BLE 输入转换也走同一路径
 3. GL/GR/C 可见或可绑定
 4. rumble test 能让手柄震动
 5. gyro 至少能被 Steam 发现并响应
@@ -975,9 +1057,11 @@ firmware update
 3. 用 Steam 验证识别和 bulk/HID output 日志
 4. 抓真实有线 NS2 Pro USBPcap
 5. 做 bulk replay responder
-6. 接入 Go BLE input 0x09
-7. 接入 HID output 0x02 → BLE rumble
-8. 补 feature select / gyro / calibration
+6. 先用键盘生成 USB input 0x05 验证 Steam 输入路径
+7. 捕获 Steam HID OUT 0x02，落盘并预览 BLE output payload
+8. 接入 HID output 0x02 → BLE rumble
+9. 接入 Go BLE input，并转换为 USB input 0x05
+10. 补 feature select / gyro / calibration
 ```
 
 最重要的第一步不是写 BLE，而是验证虚拟 USB device 能否让 Steam 进入原生 Switch 2 Pro path。  
@@ -1047,4 +1131,4 @@ firmware update
 
 ## 16. 一句话方案
 
-> fork VIIPER，在 Go 中新增 `NS2Pro` USB composite device；USB 侧模拟 `057E:2069` 的 Switch 2 Pro Controller，HID interface 负责 input/rumble，vendor bulk interface 负责 init/feature/gyro/calibration；BLE 侧订阅 NS2 Pro report 0x09 原样补 report ID 透传给 Steam，并把 Steam 的 output report 0x02 和 configuration commands 转回真实 BLE 手柄。
+> fork VIIPER，在 Go 中新增 `NS2Pro` USB composite device；USB 侧模拟本地抓包确认的 `057E:2069` / `bcdDevice=0x0101` / 2-interface Pro Controller，HID interface 负责 USB input report `0x05` 和 rumble output report `0x02`，vendor bulk interface 负责 init/feature/gyro/calibration replay；BLE 侧后续将真实输入转换为 USB report `0x05`，并把 Steam 的 output report `0x02` 和 configuration commands 转回真实 BLE 手柄。
