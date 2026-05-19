@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSwitch2ProConfigDescriptorMatchesCapture(t *testing.T) {
+func TestNS2ProConfigDescriptorMatchesCapture(t *testing.T) {
 	server := New(ServerConfig{}, slog.Default(), nil)
-	desc := switch2ProDescriptorForConfigTest()
+	desc := NS2ProDescriptorForConfigTest()
 	got := server.buildConfigDescriptor(&desc)
 
 	require.Equal(t,
@@ -28,7 +28,7 @@ func mustHexTest(t *testing.T, s string) []byte {
 	return out
 }
 
-func switch2ProDescriptorForConfigTest() pusb.Descriptor {
+func NS2ProDescriptorForConfigTest() pusb.Descriptor {
 	return pusb.Descriptor{
 		Config: &pusb.ConfigurationDescriptor{
 			IConfiguration: 0x04,

@@ -3,7 +3,7 @@
 > 目标：在 Windows PC 已有蓝牙能力的前提下，实现“NS2 Pro / Switch 2 Pro Controller 通过 BLE 连接 PC，但在 Steam 侧表现为有线 USB Switch 2 Pro Controller”，尽量保留 Steam Input 原生识别、GL/GR/C、gyro/IMU、rumble/haptics 等能力。  
 > 日期：2026-05-18  
 > 推荐实现语言：Go 优先；Rust/C# 可作为 GUI 或后备 BLE/工具链。  
-> 推荐路线：fork VIIPER，新增 `switch2pro` / `ns2pro` device type，在同一个 Go 进程中实现虚拟 USB composite device + BLE client + endpoint bridge。
+> 推荐路线：fork VIIPER，新增 `NS2Pro` / `ns2pro` device type，在同一个 Go 进程中实现虚拟 USB composite device + BLE client + endpoint bridge。
 
 ---
 
@@ -22,7 +22,7 @@ Go BLE client
         │
         │ report 0x09 / output 0x02 / config commands
         ▼
-VIIPER fork: switch2pro device type
+VIIPER fork: NS2Pro device type
         │
         │ USB/IP virtual USB composite device
         ▼
@@ -136,7 +136,7 @@ GetDescriptor() *Descriptor
 工程含义：
 
 ```text
-新增 switch2pro device type：
+新增 NS2Pro device type：
   - descriptor.go 复刻 Pro Controller 2 descriptors
   - device.go 处理 EP0 / EP81 / EP01 / EP02 / EP82
   - bridge.go 连接 BLE input/output
@@ -174,7 +174,7 @@ viiper ns2pro
 
 ```text
 1. 启动 VIIPER USB/IP runtime
-2. 创建虚拟 switch2pro USB composite device
+2. 创建虚拟 NS2Pro USB composite device
 3. 自动 attach 到本机 usbip-win2
 4. 扫描并连接 NS2 Pro BLE 手柄
 5. 订阅 BLE input report 0x09
@@ -188,7 +188,7 @@ viiper ns2pro
 ```text
 VIIPER fork
 ├─ device/
-│  └─ switch2pro/
+│  └─ ns2pro/
 │     ├─ descriptor.go       # USB device/config/HID/audio descriptors
 │     ├─ hid_report.go       # HID report descriptor / report constants
 │     ├─ device.go           # HandleTransfer / HandleControl
@@ -590,7 +590,7 @@ value:
 ### 9.1 Go struct
 
 ```go
-type Switch2ProDevice struct {
+type NS2ProDevice struct {
     desc *usb.Descriptor
 
     ble *ns2ble.Client
@@ -605,7 +605,7 @@ type Switch2ProDevice struct {
 ### 9.2 HandleTransfer
 
 ```go
-func (d *Switch2ProDevice) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
+func (d *NS2ProDevice) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
     switch {
     case ep == 1 && dir == usbip.DirIn:
         // Host polling HID interrupt IN 0x81.
@@ -637,7 +637,7 @@ func (d *Switch2ProDevice) HandleTransfer(ep uint32, dir uint32, out []byte) []b
 VIIPER 支持 optional `ControlDevice`。建议实现 EP0 日志和必要 HID class requests：
 
 ```go
-func (d *Switch2ProDevice) HandleControl(
+func (d *NS2ProDevice) HandleControl(
     bmRequestType, bRequest uint8,
     wValue, wIndex, wLength uint16,
     data []byte,
@@ -657,7 +657,7 @@ func (d *Switch2ProDevice) HandleControl(
 ### 9.4 BLE input callback
 
 ```go
-func (d *Switch2ProDevice) AttachBLE(c *ns2ble.Client) {
+func (d *NS2ProDevice) AttachBLE(c *ns2ble.Client) {
     go func() {
         for report := range c.InputReports {
             // report 已是 USB HID 格式：[0x09][payload]
@@ -710,7 +710,7 @@ NS2 Pro / Switch 2 Pro Controller
 
 ```text
 1. fork VIIPER
-2. 新增 device/switch2pro
+2. 新增 device/ns2pro
 3. 复刻 Pro Controller 2 USB descriptors
 4. EP 0x81 返回 neutral input report 0x09
 5. EP 0x01 / 0x02 / 0x82 / EP0 全量日志
@@ -971,7 +971,7 @@ firmware update
 
 ```text
 1. fork VIIPER
-2. 做 switch2pro dummy USB device
+2. 做 NS2Pro dummy USB device
 3. 用 Steam 验证识别和 bulk/HID output 日志
 4. 抓真实有线 NS2 Pro USBPcap
 5. 做 bulk replay responder
@@ -1047,4 +1047,4 @@ firmware update
 
 ## 16. 一句话方案
 
-> fork VIIPER，在 Go 中新增 `switch2pro` USB composite device；USB 侧模拟 `057E:2069` 的 Switch 2 Pro Controller，HID interface 负责 input/rumble，vendor bulk interface 负责 init/feature/gyro/calibration；BLE 侧订阅 NS2 Pro report 0x09 原样补 report ID 透传给 Steam，并把 Steam 的 output report 0x02 和 configuration commands 转回真实 BLE 手柄。
+> fork VIIPER，在 Go 中新增 `NS2Pro` USB composite device；USB 侧模拟 `057E:2069` 的 Switch 2 Pro Controller，HID interface 负责 input/rumble，vendor bulk interface 负责 init/feature/gyro/calibration；BLE 侧订阅 NS2 Pro report 0x09 原样补 report ID 透传给 Steam，并把 Steam 的 output report 0x02 和 configuration commands 转回真实 BLE 手柄。

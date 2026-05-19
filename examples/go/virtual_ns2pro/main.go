@@ -12,14 +12,14 @@ import (
 
 	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device"
-	"github.com/Alia5/VIIPER/device/switch2pro"
+	"github.com/Alia5/VIIPER/device/ns2pro"
 )
 
 func main() {
 	addr := flag.String("addr", "localhost:3242", "VIIPER API server address")
 	password := flag.String("password", "", "VIIPER API password, only needed when localhost auth is enabled or connecting remotely")
 	busFlag := flag.Uint("bus", 0, "bus ID to use; 0 creates the next free bus")
-	devType := flag.String("type", "switch2pro", "device type to create: switch2pro or ns2pro")
+	devType := flag.String("type", "ns2pro", "device type to create")
 	cleanup := flag.Bool("cleanup", true, "remove the virtual device on exit")
 	bulkReplay := flag.Bool("bulk-replay", true, "enable captured bulk init/config replay fixtures")
 	interval := flag.Duration("interval", 4*time.Millisecond, "neutral input report write interval")
@@ -77,7 +77,7 @@ func main() {
 
 	go logHIDOutput(stream)
 
-	report := switch2pro.NeutralInputReport()
+	report := ns2pro.NeutralInputReport()
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 

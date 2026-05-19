@@ -1,5 +1,5 @@
-// Package switch2pro provides a Nintendo Switch 2 Pro / NS2 Pro USB device.
-package switch2pro
+// Package ns2pro provides a Nintendo Switch 2 Pro / NS2 Pro USB device.
+package ns2pro
 
 import (
 	"github.com/Alia5/VIIPER/usb"

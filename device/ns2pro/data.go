@@ -1,4 +1,4 @@
-package switch2pro
+package ns2pro
 
 import (
 	"encoding/hex"
@@ -84,7 +84,7 @@ var bulkReplayResponses = map[string][][]byte{
 func mustHex(s string) []byte {
 	b, err := hex.DecodeString(s)
 	if err != nil {
-		panic(fmt.Sprintf("switch2pro: invalid hex fixture %q: %v", s, err))
+		panic(fmt.Sprintf("ns2pro: invalid hex fixture %q: %v", s, err))
 	}
 	return b
 }

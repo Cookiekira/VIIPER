@@ -1,4 +1,4 @@
-package switch2pro
+package ns2pro
 
 import (
 	"encoding/hex"
@@ -12,7 +12,7 @@ import (
 	"github.com/Alia5/VIIPER/usbip"
 )
 
-type Switch2Pro struct {
+type NS2Pro struct {
 	descriptor usb.Descriptor
 
 	inputMu     sync.RWMutex
@@ -29,8 +29,8 @@ type CreateOptions struct {
 }
 
 // New returns a dummy Switch 2 Pro / NS2 Pro USB device.
-func New(o *device.CreateOptions) (*Switch2Pro, error) {
-	d := &Switch2Pro{
+func New(o *device.CreateOptions) (*NS2Pro, error) {
+	d := &NS2Pro{
 		descriptor:  MakeDescriptor(),
 		inputReport: cloneBytes(neutralInputReport),
 		bulkReplay:  true,
@@ -59,11 +59,11 @@ func New(o *device.CreateOptions) (*Switch2Pro, error) {
 	return d, nil
 }
 
-func (d *Switch2Pro) SetHIDOutputCallback(f func([]byte)) {
+func (d *NS2Pro) SetHIDOutputCallback(f func([]byte)) {
 	d.hidOutputFunc = f
 }
 
-func (d *Switch2Pro) UpdateInputReport(report []byte) bool {
+func (d *NS2Pro) UpdateInputReport(report []byte) bool {
 	normalized, ok := NormalizeInputReport05(report)
 	if !ok {
 		return false
@@ -88,7 +88,7 @@ func NormalizeInputReport05(report []byte) ([]byte, bool) {
 	}
 }
 
-func (d *Switch2Pro) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
+func (d *NS2Pro) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
 	switch {
 	case dir == usbip.DirIn && ep == 1:
 		return d.currentInputReport()
@@ -102,7 +102,7 @@ func (d *Switch2Pro) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
 		return d.popBulkIn()
 	default:
 		if dir == usbip.DirOut || len(out) > 0 {
-			slog.Info("switch2pro unsupported transfer",
+			slog.Info("ns2pro unsupported transfer",
 				"ep", ep,
 				"dir", dir,
 				"len", len(out),
@@ -113,15 +113,15 @@ func (d *Switch2Pro) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
 	}
 }
 
-func (d *Switch2Pro) GetDescriptor() *usb.Descriptor {
+func (d *NS2Pro) GetDescriptor() *usb.Descriptor {
 	return &d.descriptor
 }
 
-func (d *Switch2Pro) GetDeviceSpecificArgs() map[string]any {
+func (d *NS2Pro) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{"bulkReplay": d.bulkReplay}
 }
 
-func (d *Switch2Pro) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) ([]byte, bool) {
+func (d *NS2Pro) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) ([]byte, bool) {
 	const (
 		hidGetReport = 0x01
 		hidGetIdle   = 0x02
@@ -136,7 +136,7 @@ func (d *Switch2Pro) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex
 	reportType := uint8(wValue >> 8)
 	reportID := uint8(wValue & 0xFF)
 
-	slog.Info("switch2pro control request",
+	slog.Info("ns2pro control request",
 		"bmRequestType", bmRequestType,
 		"bRequest", bRequest,
 		"wValue", fmt.Sprintf("0x%04x", wValue),
@@ -169,14 +169,14 @@ func (d *Switch2Pro) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex
 	return nil, false
 }
 
-func (d *Switch2Pro) currentInputReport() []byte {
+func (d *NS2Pro) currentInputReport() []byte {
 	d.inputMu.RLock()
 	defer d.inputMu.RUnlock()
 	return cloneBytes(d.inputReport)
 }
 
-func (d *Switch2Pro) handleHIDOut(out []byte) {
-	slog.Info("switch2pro HID OUT",
+func (d *NS2Pro) handleHIDOut(out []byte) {
+	slog.Info("ns2pro HID OUT",
 		"len", len(out),
 		"data", hex.EncodeToString(out),
 	)
@@ -185,9 +185,9 @@ func (d *Switch2Pro) handleHIDOut(out []byte) {
 	}
 }
 
-func (d *Switch2Pro) handleBulkOut(out []byte) {
+func (d *NS2Pro) handleBulkOut(out []byte) {
 	key := hex.EncodeToString(out)
-	slog.Info("switch2pro bulk OUT",
+	slog.Info("ns2pro bulk OUT",
 		"len", len(out),
 		"data", key,
 	)
@@ -196,7 +196,7 @@ func (d *Switch2Pro) handleBulkOut(out []byte) {
 	}
 	responses, ok := bulkReplayResponses[key]
 	if !ok {
-		slog.Info("switch2pro bulk OUT has no replay fixture", "data", key)
+		slog.Info("ns2pro bulk OUT has no replay fixture", "data", key)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (d *Switch2Pro) handleBulkOut(out []byte) {
 	}
 }
 
-func (d *Switch2Pro) popBulkIn() []byte {
+func (d *NS2Pro) popBulkIn() []byte {
 	d.bulkMu.Lock()
 	defer d.bulkMu.Unlock()
 	if len(d.bulkIn) == 0 {
@@ -217,7 +217,7 @@ func (d *Switch2Pro) popBulkIn() []byte {
 	copy(d.bulkIn, d.bulkIn[1:])
 	d.bulkIn[len(d.bulkIn)-1] = nil
 	d.bulkIn = d.bulkIn[:len(d.bulkIn)-1]
-	slog.Info("switch2pro bulk IN replay",
+	slog.Info("ns2pro bulk IN replay",
 		"len", len(response),
 		"data", hex.EncodeToString(response),
 	)

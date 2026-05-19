@@ -1,4 +1,4 @@
-package switch2pro
+package ns2pro
 
 import (
 	"encoding/hex"

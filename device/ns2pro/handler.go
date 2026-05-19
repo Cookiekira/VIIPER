@@ -1,4 +1,4 @@
-package switch2pro
+package ns2pro
 
 import (
 	"fmt"
@@ -12,7 +12,6 @@ import (
 )
 
 func init() {
-	api.RegisterDevice("switch2pro", &handler{})
 	api.RegisterDevice("ns2pro", &handler{})
 }
 
@@ -25,14 +24,14 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 		if devPtr == nil || *devPtr == nil {
 			return fmt.Errorf("nil device")
 		}
-		dev, ok := (*devPtr).(*Switch2Pro)
+		dev, ok := (*devPtr).(*NS2Pro)
 		if !ok {
-			return fmt.Errorf("device is not switch2pro")
+			return fmt.Errorf("device is not ns2pro")
 		}
 
 		dev.SetHIDOutputCallback(func(report []byte) {
 			if _, err := conn.Write(report); err != nil {
-				logger.Error("failed to send switch2pro HID output report", "error", err)
+				logger.Error("failed to send ns2pro HID output report", "error", err)
 			}
 		})
 
@@ -43,10 +42,10 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 					logger.Info("client disconnected")
 					return nil
 				}
-				return fmt.Errorf("read switch2pro input report: %w", err)
+				return fmt.Errorf("read ns2pro input report: %w", err)
 			}
 			if !dev.UpdateInputReport(buf) {
-				return fmt.Errorf("invalid switch2pro input report: len=%d reportID=0x%02x", len(buf), buf[0])
+				return fmt.Errorf("invalid ns2pro input report: len=%d reportID=0x%02x", len(buf), buf[0])
 			}
 		}
 	}
