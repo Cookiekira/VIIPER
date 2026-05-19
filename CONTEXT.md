@@ -50,6 +50,18 @@ _Avoid_: auto connect
 A passthrough operating mode that observes USBIP traffic between external endpoints.
 _Avoid_: bridge mode
 
+**MI_01**:
+The NS2Pro vendor interface slot that Windows tooling targets for user-mode controller setup traffic.
+_Avoid_: random second interface
+
+**WinUSB Interface**:
+An interface bound to the Windows WinUSB stack for generic user-mode access.
+_Avoid_: HID interface
+
+**DeviceInterfaceGUIDs**:
+The Microsoft OS Extended Properties value used so Windows and user-space stacks can discover a composite interface reliably.
+_Avoid_: optional metadata
+
 **NS2Pro**:
 The canonical VIIPER device type name for Nintendo Switch 2 Pro emulation.
 _Avoid_: pro controller
@@ -64,6 +76,8 @@ _Avoid_: pro controller
 - **Auto-Attach** is an optional policy applied by **VIIPER Server** at device creation time.
 - **Proxy Mode** does not create **Virtual Devices**; it observes existing USBIP traffic paths.
 - **NS2Pro** is a **Device Type**.
+- **NS2Pro** exposes **MI_01** as a **WinUSB Interface**.
+- **DeviceInterfaceGUIDs** is required for stable discovery of NS2Pro **MI_01** on Windows.
 
 ## Example dialogue
 
@@ -76,3 +90,4 @@ _Avoid_: pro controller
 ## Flagged ambiguities
 
 - "Pro Controller" appears as a product-facing USB name, but in VIIPER domain language the canonical **Device Type** is **NS2Pro**.
+- "controller detected" can refer to HID presence only; NS2Pro setup compatibility in Windows also depends on discoverable **MI_01** WinUSB interface metadata.
