@@ -39,3 +39,4 @@ logs/
 log/
 !*/internal/log
 *.log
+captures/
