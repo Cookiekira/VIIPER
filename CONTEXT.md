@@ -66,6 +66,26 @@ _Avoid_: optional metadata
 The canonical VIIPER device type name for Nintendo Switch 2 Pro emulation.
 _Avoid_: pro controller
 
+**Steam-facing USB Report `0x05`**:
+The canonical HID IN frame emitted by **NS2Pro** to Steam: report ID `0x05` plus a 63-byte payload, for a 64-byte USB HID input report.
+_Avoid_: USB report `0x09`, raw BLE passthrough
+
+**BLE Input Report `0x09`**:
+The canonical Switch 2 Pro Controller BLE input notification payload used as the real-controller source for the current **NS2Pro** bridge. It arrives through a GATT input characteristic and does not include a HID report ID byte.
+_Avoid_: USB HID report ID, Steam-facing report
+
+**BLE Command Transport Byte**:
+The third byte in Switch 2 command packets that identifies transport framing: `0x01` for Bluetooth/BLE, `0x00` for USB.
+_Avoid_: copying USB command bytes directly into BLE writes
+
+**GATT Attribute Handle**:
+The BLE attribute table handle used to select a characteristic or descriptor, such as input notification, command write, or command response notification.
+_Avoid_: HID report ID, USB endpoint
+
+**NS2Pro Sensor Bridge**:
+The opt-in path that copies real-controller BLE IMU/motion data into the Steam-facing USB report `0x05` sensor offsets.
+_Avoid_: default input path, calibrated gyro implementation
+
 ## Relationships
 
 - A **VIIPER Server** hosts zero or more **Virtual Buses**.
@@ -78,6 +98,11 @@ _Avoid_: pro controller
 - **NS2Pro** is a **Device Type**.
 - **NS2Pro** exposes **MI_01** as a **WinUSB Interface**.
 - **DeviceInterfaceGUIDs** is required for stable discovery of NS2Pro **MI_01** on Windows.
+- **Steam-facing USB Report `0x05`** is the only current Steam-visible HID IN path for **NS2Pro**.
+- **BLE Input Report `0x09`** is parsed into controller state and rebuilt as **Steam-facing USB Report `0x05`**.
+- **GATT Attribute Handles** choose BLE characteristics/descriptors; they are not USB endpoints and are not HID report IDs.
+- **BLE Command Transport Byte** must be `0x01` for BLE command characteristic writes even when the equivalent USB command uses `0x00`.
+- **NS2Pro Sensor Bridge** is experimental and opt-in; the normal **NS2Pro** input path remains buttons/sticks/rumble/LED.
 
 ## Example dialogue
 
@@ -91,3 +116,6 @@ _Avoid_: pro controller
 
 - "Pro Controller" appears as a product-facing USB name, but in VIIPER domain language the canonical **Device Type** is **NS2Pro**.
 - "controller detected" can refer to HID presence only; NS2Pro setup compatibility in Windows also depends on discoverable **MI_01** WinUSB interface metadata.
+- "report `0x09`" is ambiguous: in BLE bridge work it usually means **BLE Input Report `0x09`**, while Steam currently consumes **Steam-facing USB Report `0x05`**.
+- "handle `0x000E`" is a **GATT Attribute Handle** for a BLE characteristic, not a report ID and not a USB endpoint.
+- "gyro support" is ambiguous: **NS2Pro Sensor Bridge** can move raw/compact motion data into Steam-visible sensor offsets, but calibrated gyro behavior still needs real-game/Steam validation.

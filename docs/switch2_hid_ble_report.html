@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="corporate">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Switch 2 BLE Viewer 与 SDL 有线 HID 驱动对照报告</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.24/dist/full.min.css" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5d677c;
+      --line: #d8deea;
+      --panel: #ffffff;
+      --wash: #f5f7fb;
+      --blue: #2463eb;
+      --green: #117865;
+      --amber: #a15c07;
+      --red: #b42318;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(36, 99, 235, 0.08), transparent 360px),
+        var(--wash);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .report-shell {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 28px 20px 56px;
+    }
+
+    .hero-band {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 18px 48px rgba(23, 32, 51, 0.08);
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .code-chip {
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #f8fafc;
+      color: #172033;
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.82rem;
+      padding: 0.1rem 0.36rem;
+      white-space: nowrap;
+    }
+
+    .source-tag {
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      padding: 0.16rem 0.44rem;
+      font-size: 0.75rem;
+      color: #334155;
+      background: #f8fafc;
+    }
+
+    .hex-block {
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #dbeafe;
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.75;
+      overflow-x: auto;
+      padding: 0.9rem;
+      white-space: pre;
+    }
+
+    .accent-blue { border-left: 4px solid var(--blue); }
+    .accent-green { border-left: 4px solid var(--green); }
+    .accent-amber { border-left: 4px solid var(--amber); }
+    .accent-red { border-left: 4px solid var(--red); }
+
+    .table :where(th, td) {
+      vertical-align: top;
+    }
+
+    .table th {
+      color: #334155;
+      font-weight: 700;
+      background: #f8fafc;
+    }
+
+    .tabs-lifted > .tab {
+      min-width: 9rem;
+    }
+
+    @media (max-width: 720px) {
+      .report-shell {
+        padding: 16px 12px 40px;
+      }
+
+      .tabs-lifted > .tab {
+        min-width: auto;
+        flex: 1 1 auto;
+        font-size: 0.82rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useMemo, useState } = React;
+
+    const sources = [
+      { label: "BLE viewer", path: "../references/switch2_input_viewer.py", note: "PyQt + Bleak, GATT characteristic handles, raw input viewer" },
+      { label: "SDL wired HID", path: "../references/SDL_hidapi_switch2.c", note: "SDL HIDAPI driver, USB/libusb bulk endpoints, normalized SDL events" },
+    ];
+
+    const verdictCards = [
+      {
+        title: "通信层不同",
+        tone: "accent-blue",
+        body: "BLE viewer 走 GATT characteristic 和 descriptor。SDL 驱动当前只支持 USB 有线，使用 libusb 找 interface 1 的 bulk IN/OUT endpoint。",
+        tags: ["BLE: GATT", "USB: bulk endpoint"],
+      },
+      {
+        title: "命令族相近",
+        tone: "accent-green",
+        body: "两者都在发 0x91 系列控制命令，例如 LED、feature、flash 读取。但第 3 字节和部分 subcommand 不同，不能直接把 BLE 字节序列搬到 USB。",
+        tags: ["0x91 command family", "transport framing differs"],
+      },
+      {
+        title: "SDL gyro 支持更完整",
+        tone: "accent-amber",
+        body: "SDL 会注册 SDL_SENSOR_GYRO/ACCEL，解析 timestamp、缩放 raw int16、扣 gyro bias，并按 Joy-Con 姿态重排轴。BLE viewer 只保存/绘制 motion raw bytes。",
+        tags: ["gyro yes", "accel yes", "BLE raw only"],
+      },
+      {
+        title: "Bluetooth 状态相反",
+        tone: "accent-red",
+        body: "BLE viewer 专门服务蓝牙。SDL_hidapi_switch2.c 中 Bluetooth init 仍是 TODO，直接返回不支持。",
+        tags: ["SDL BT unsupported", "viewer BT only"],
+      },
+    ];
+
+    const bleHandles = [
+      {
+        name: "Input Notification",
+        ui: "0x000A / 0x000E",
+        bleak: "0x0009 / 0x000D",
+        dir: "controller to host",
+        purpose: "订阅输入 report。包含按键、摇杆、motion、鼠标、trigger、电量等。0x000A 和 0x000E 使用不同 report layout。",
+      },
+      {
+        name: "Command",
+        ui: "0x0014 / 0x0016",
+        bleak: "0x0013 / 0x0015",
+        dir: "host to controller",
+        purpose: "写控制命令。用于读 SPI/flash、设置 LED、配置 feature flags、播放预设震动、读版本等。选 0x0016 时脚本会在命令前补 33 个 0x00。",
+      },
+      {
+        name: "Command Response Notification",
+        ui: "0x001A / 0x001E",
+        bleak: "0x0019 / 0x001D",
+        dir: "controller to host",
+        purpose: "订阅命令响应。0x001E 的响应多 14 字节头，viewer 会从 data[14:] 开始取 payload。",
+      },
+      {
+        name: "Vibration",
+        ui: "0x0012",
+        bleak: "0x0011",
+        dir: "host to controller",
+        purpose: "写自定义 rumble 数据。不同于 play_vibration_sample，它是直接往 vibration characteristic 写 packed motor data。",
+      },
+      {
+        name: "Input descriptor",
+        ui: "input + 3",
+        bleak: "selected input + 3",
+        dir: "host to descriptor",
+        purpose: "写 0x8500，脚本注释为 Write report rate。它是 GATT descriptor 写入，不是输入 report 本体。",
+      },
+    ];
+
+    const featureBits = [
+      ["0", "0x01", "button state reporting", "BLE viewer 默认开启。SDL feature mask 0x27/0x23 也包含它。"],
+      ["1", "0x02", "analog stick reporting", "BLE viewer 默认开启。SDL 也依赖它解析 12-bit stick。"],
+      ["2", "0x04", "IMU reporting", "BLE viewer UI 有开关但默认不开。SDL 初始化阶段使用 0x27，sensor ready 后按 SDL sensor API 再切换。"],
+      ["3", "0x08", "unknown", "viewer 未解释，SDL mask 未使用。"],
+      ["4", "0x10", "mouse reporting", "viewer 可显示 mouse。SDL wired driver 没有映射 mouse 数据。"],
+      ["5", "0x20", "current reporting", "viewer 标成 current。SDL mask 0x27/0x23 均包含。"],
+      ["6", "0x40", "unknown", "viewer 未解释，SDL mask 未使用。"],
+      ["7", "0x80", "magnetometer reporting", "viewer UI 有开关。SDL wired driver 未发送磁力计 sensor。"],
+    ];
+
+    const commandRows = [
+      {
+        action: "读设备信息/校准 flash",
+        ble: "0x02 0x91 0x01 0x04 ... size 0x7E ... address",
+        usb: "0x02 0x91 0x00 0x01 ... address",
+        note: "BLE 可传 size。SDL ReadFlashBlock 固定拿 0x40，并从返回 buffer[0x10] 拷贝数据。",
+      },
+      {
+        action: "设置玩家 LED",
+        ble: "0x09 0x91 0x01 0x07 ... led_mask",
+        usb: "0x09 0x91 0x00 0x07 ... led_mask",
+        note: "语义一致，transport/framing 字节不同。",
+      },
+      {
+        action: "feature configure",
+        ble: "0x0c 0x91 0x01 0x02 ... flags",
+        usb: "0x0c 0x91 0x00 0x02 ... 0x27",
+        note: "viewer 启动时先 configure 0xFF，再 enable 当前 UI flags。SDL 初始化用 0x27。",
+      },
+      {
+        action: "feature enable",
+        ble: "0x0c 0x91 0x01 0x04 ... flags",
+        usb: "0x0c 0x91 0x00 0x04 ... 0x27 or 0x23",
+        note: "SDL sensor ready 前后会用 0x27/0x23 控制 IMU bit。",
+      },
+      {
+        action: "feature disable",
+        ble: "0x0c 0x91 0x01 0x05 ... flags",
+        usb: "未见通用 disable 路径",
+        note: "SDL SetJoystickSensorsEnabled(false) 构造 0x23，但函数最后仍把 sensors_enabled 置 true，值得核实调用语义。",
+      },
+      {
+        action: "rumble",
+        ble: "GATT vibration handle 0x0012, packed motor data",
+        usb: "64-byte HID rumble report, product-specific first byte",
+        note: "SDL 对 Pro 会复制左右 motor 数据到 offset 0x01 和 0x11。GameCube 使用简化 on/off pulse。",
+      },
+    ];
+
+    const reportLayouts = [
+      {
+        group: "BLE input 0x000A",
+        rows: [
+          ["buttons", "0x04..0x07", "4 bytes common button bitmap"],
+          ["left/right sticks", "0x0A..0x0F", "两个 12-bit triplet"],
+          ["mouse", "0x10..0x17", "position/squal/lod style"],
+          ["motion", "0x2E..0x3B", "14 bytes, viewer 只按 int16 raw 绘图"],
+          ["analog triggers", "0x3C..0x3D", "GameCube/完整格式触发值"],
+        ],
+      },
+      {
+        group: "BLE input 0x000E Pro/GameCube",
+        rows: [
+          ["buttons", "0x02..0x04", "3 bytes"],
+          ["sticks", "0x05..0x0A", "两个 12-bit triplet"],
+          ["triggers", "0x0C..0x0D", "2 bytes"],
+          ["motion", "0x0F..0x36", "40 bytes raw motion block"],
+        ],
+      },
+      {
+        group: "BLE input 0x000E Joy-Con",
+        rows: [
+          ["buttons", "0x02..0x03", "2 bytes"],
+          ["stick", "0x05..0x07", "单个 12-bit triplet"],
+          ["mouse", "0x09..0x0D", "delta x/y + lod"],
+          ["motion", "0x10..0x37", "40 bytes raw motion block"],
+        ],
+      },
+      {
+        group: "SDL wired 64-byte state packet",
+        rows: [
+          ["buttons", "data[5], data[6], data[7], data[8]", "按产品类型映射到 SDL gamepad button/hat"],
+          ["sticks", "data[11]..data[16]", "两个 12-bit triplet，使用 factory/user calibration 映射到 SDL axis"],
+          ["sensor timestamp", "data[0x2B]..data[0x2E]", "用于估算传感器时间基"],
+          ["accel", "data[0x31]..data[0x36]", "int16 三轴，scale = 9.80665 * 8 / INT16_MAX"],
+          ["gyro", "data[0x37]..data[0x3C]", "int16 三轴，scale = gyro_coeff / INT16_MAX，再扣 gyro bias"],
+          ["GameCube triggers", "data[61], data[62]", "按 zero calibration 映射到 trigger axis"],
+        ],
+      },
+    ];
+
+    const packetExamples = [
+      {
+        title: "BLE enable features: buttons + sticks + IMU",
+        transport: "GATT command write",
+        summary: "写到 COMMAND_HANDLE。最后的 0x07 = bit0 button + bit1 stick + bit2 IMU。",
+        bytes: `0C 91 01 04 00 04 00 00 07 00 00 00`,
+        decode: [
+          ["0C", "feature command"],
+          ["91", "command family / magic"],
+          ["01", "BLE framing；SDL USB 同类命令用 00"],
+          ["04", "enable features；02 是 configure，05 是 disable"],
+          ["04", "payload length = 4"],
+          ["07 00 00 00", "feature mask payload，小端 padding"],
+        ],
+      },
+      {
+        title: "BLE read flash: gyro bias block",
+        transport: "GATT command write + response notification",
+        summary: "读 0x13040，长度 0x10。viewer 用这个地址解析 temperature + 3 个 float gyro bias。",
+        bytes: `02 91 01 04 00 08 00 00 10 7E 00 00 40 30 01 00`,
+        decode: [
+          ["02", "read memory / SPI flash command"],
+          ["91 01 04", "BLE 命令头"],
+          ["08", "参数长度"],
+          ["10", "读取长度 0x10"],
+          ["7E 00 00", "固定字段"],
+          ["40 30 01 00", "地址 0x00013040，小端"],
+        ],
+      },
+      {
+        title: "BLE input 0x000A notification",
+        transport: "GATT input notification",
+        summary: "示意包。关键是 offset：buttons 在 0x04，sticks 在 0x0A/0x0D，motion 在 0x2E，triggers 在 0x3C。",
+        bytes: `00 00 00 00 08 00 02 00 00 00 00 80 80 00 80 80
+10 00 F0 FF 20 00 01 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 34 12 10 00 F0 FF 20 00
+00 00 00 00 00 80`,
+        decode: [
+          ["0x04..0x07", "buttons"],
+          ["0x0A..0x0C", "stick1, 12-bit packed"],
+          ["0x0D..0x0F", "stick2, 12-bit packed"],
+          ["0x10..0x17", "mouse"],
+          ["0x2E..0x3B", "motion raw bytes"],
+          ["0x3C..0x3D", "analog triggers"],
+        ],
+      },
+      {
+        title: "SDL wired 64-byte state packet",
+        transport: "USB HID report read",
+        summary: "示意包。SDL 统一读 64 字节，再按 product_id 分派到 Pro/Joy-Con/GameCube parser。",
+        bytes: `00 00 00 00 00 08 02 02 00 00 00 00 80 80 00 80
+80 00 00 00 00 00 00 00 00 00 00 00 78 56 34 12
+00 00 10 00 F0 FF 20 00 40 00 30 00 D0 FF 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 20 30 00`,
+        decode: [
+          ["data[5]..data[8]", "buttons / dpad / paddles"],
+          ["data[11]..data[16]", "left/right sticks, 12-bit packed"],
+          ["data[0x2B..0x2E]", "sensor timestamp"],
+          ["data[0x31..0x36]", "accelerometer int16 x/y/z"],
+          ["data[0x37..0x3C]", "gyro int16 x/y/z"],
+          ["data[61], data[62]", "GameCube analog triggers"],
+        ],
+      },
+    ];
+
+    const framingRows = [
+      ["BLE command", "0x?? 0x91 0x01 ...", "通过 GATT command characteristic 写入；响应从 command response notification 回来。"],
+      ["USB command", "0x?? 0x91 0x00 ...", "通过 libusb bulk OUT 发出；同步从 bulk IN 读 reply。"],
+      ["BLE input", "variable report on 0x000A/0x000E", "不同 GATT input handle 有不同 layout，viewer 直接按 offset 切片。"],
+      ["USB input", "64-byte state packet", "SDL 从 HIDAPI 读固定 buffer，再按 product_id 做解析和 SDL event 映射。"],
+    ];
+
+    const calibrationRows = [
+      ["0x13000", "device info / serial / VID PID / colours", "两者都读。BLE viewer 还显示颜色。SDL 用 serial 设置 HIDAPI device serial。"],
+      ["0x13040", "motion calibration temperature + gyro bias", "两者都读 gyro bias。SDL 后续会在 gyro_data 中扣除 bias。"],
+      ["0x13080", "primary/left stick factory calibration", "两者按 12-bit triplet 解析。"],
+      ["0x130C0", "secondary/right stick factory calibration", "两者按 12-bit triplet 解析。"],
+      ["0x13100", "magnetometer bias + accelerometer bias", "BLE viewer 记录 magnetometer 和 accelerometer bias。SDL 只使用 accel bias 字段存储，当前转换里没有扣 accel bias。"],
+      ["0x13140", "GameCube analog trigger zero", "两者只在 GameCube product 上读取。"],
+      ["0x1FC040", "user stick calibration", "BLE viewer 在同一 0x40 block 内取 primary 和 secondary。SDL 分别读 0x1FC040 与 0x1FC080。magic 检查也不同，建议实机核对。"],
+    ];
+
+    const diffRows = [
+      ["抽象层", "BLE viewer 是研究/查看器，展示 raw bytes 和 UI 状态。", "SDL 驱动是生产输入层，转成 SDL button/axis/sensor 事件。"],
+      ["连接模型", "扫描 manufacturer data，连接 BLE，订阅 GATT notification。", "打开 HIDAPI device，拿 libusb handle，claim USB interface 1，找 bulk IN/OUT。"],
+      ["实时输入", "通知回调直接解析 report，所有字段每包刷新。", "poll hid_read_timeout，按钮只在 last_state 变化时发事件，轴和 sensor 每包更新。"],
+      ["IMU/gyro", "有 bit 2 和 raw motion buffer，但默认不开，也没有命名解析 gyro 轴。", "完整注册 gyro/accel sensor，处理 timestamp、scale、bias、Joy-Con 姿态映射。"],
+      ["蓝牙支持", "核心目标就是 BLE。", "InitBluetooth 直接 TODO，不支持 Switch 2 Bluetooth。"],
+      ["USB/GATT handle", "依赖固定 GATT attribute handle。", "没有 GATT handle，只有 USB endpoint 和 64-byte HID report。"],
+      ["report format", "0x000A/0x000E 两套 BLE layout。", "统一 64-byte state packet，再按产品类型分派处理。"],
+      ["rumble", "通过 vibration characteristic 写 packed 数据，也能发送预设震动命令。", "SDL rumble thread 发 64-byte report，并限制最大振幅 RUMBLE_MAX=29000。"],
+    ];
+
+    const gyroSteps = [
+      "OpenJoystick 时注册 SDL_SENSOR_GYRO 和 SDL_SENSOR_ACCEL，采样率标 250 Hz。",
+      "状态包里读取 sensor timestamp: data[0x2B..0x2E]。",
+      "先积累样本估算 timestamp 系数。如果时间基接近预期，gyro_coeff 用 34.8，否则切到 40.0。",
+      "accel 从 data[0x31..0x36] 读取，按 8g 量程转换到 m/s^2。",
+      "gyro 从 data[0x37..0x3C] 读取，乘 gyro_coeff / INT16_MAX，并扣除 0x13040 中的 gyro bias。",
+      "Joy-Con 单独使用时会重排/翻转轴。组合手柄或 Pro/GC 走默认映射。",
+    ];
+
+    function Code({ children }) {
+      return <span className="code-chip">{children}</span>;
+    }
+
+    function CodeBlock({ children }) {
+      return (
+        <pre className="hex-block">
+          <code>{children}</code>
+        </pre>
+      );
+    }
+
+    function SourceTags() {
+      return (
+        <div className="flex flex-wrap gap-2">
+          {sources.map((source) => (
+            <a key={source.label} href={source.path} className="source-tag hover:border-primary hover:text-primary" title={source.note}>
+              {source.label}
+            </a>
+          ))}
+        </div>
+      );
+    }
+
+    function Section({ title, subtitle, children }) {
+      return (
+        <section className="panel p-5 md:p-6">
+          <div className="mb-4 flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">{title}</h2>
+              {subtitle ? <p className="mt-1 text-sm text-slate-600">{subtitle}</p> : null}
+            </div>
+          </div>
+          {children}
+        </section>
+      );
+    }
+
+    function VerdictGrid() {
+      return (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {verdictCards.map((card) => (
+            <article key={card.title} className={`panel ${card.tone} p-4`}>
+              <h3 className="font-bold">{card.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{card.body}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {card.tags.map((tag) => <span key={tag} className="badge badge-outline">{tag}</span>)}
+              </div>
+            </article>
+          ))}
+        </div>
+      );
+    }
+
+    function SimpleTable({ headers, rows }) {
+      return (
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="table table-sm">
+            <thead>
+              <tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={index}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={cellIndex} className="leading-6">
+                      {typeof cell === "string" && cell.startsWith("0x") ? <Code>{cell}</Code> : cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function HandleTable() {
+      return (
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="table table-sm">
+            <thead>
+              <tr>
+                <th>BLE handle</th>
+                <th>UI 显示</th>
+                <th>Bleak 实际</th>
+                <th>方向</th>
+                <th>作用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bleHandles.map((row) => (
+                <tr key={row.name}>
+                  <td className="font-semibold">{row.name}</td>
+                  <td><Code>{row.ui}</Code></td>
+                  <td><Code>{row.bleak}</Code></td>
+                  <td>{row.dir}</td>
+                  <td className="leading-6">{row.purpose}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function CommandTable() {
+      return (
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="table table-sm">
+            <thead>
+              <tr>
+                <th>动作</th>
+                <th>BLE viewer</th>
+                <th>SDL wired USB</th>
+                <th>解释</th>
+              </tr>
+            </thead>
+            <tbody>
+              {commandRows.map((row) => (
+                <tr key={row.action}>
+                  <td className="font-semibold">{row.action}</td>
+                  <td><Code>{row.ble}</Code></td>
+                  <td><Code>{row.usb}</Code></td>
+                  <td className="leading-6">{row.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function LayoutCards() {
+      return (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {reportLayouts.map((layout) => (
+            <article key={layout.group} className="panel p-4">
+              <h3 className="mb-3 font-bold">{layout.group}</h3>
+              <SimpleTable headers={["字段", "offset", "说明"]} rows={layout.rows} />
+            </article>
+          ))}
+        </div>
+      );
+    }
+
+    function GyroFlow() {
+      return (
+        <ol className="grid gap-3 md:grid-cols-2">
+          {gyroSteps.map((step, index) => (
+            <li key={step} className="panel p-4">
+              <div className="mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-bold text-primary-content">
+                {index + 1}
+              </div>
+              <p className="text-sm leading-6 text-slate-700">{step}</p>
+            </li>
+          ))}
+        </ol>
+      );
+    }
+
+    function TabButton({ id, active, onClick, children }) {
+      return (
+        <button className={`tab tab-lifted ${active === id ? "tab-active font-bold" : ""}`} onClick={() => onClick(id)}>
+          {children}
+        </button>
+      );
+    }
+
+    function Overview() {
+      return (
+        <div className="space-y-5">
+          <VerdictGrid />
+          <Section title="一句话结论" subtitle="两份代码互补，但不能把 BLE handle 当 USB endpoint 使用。">
+            <div className="grid gap-4 lg:grid-cols-3">
+              <div className="panel bg-slate-50 p-4">
+                <div className="text-sm text-slate-500">BLE viewer</div>
+                <div className="mt-1 text-2xl font-bold">研究工具</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">用固定 GATT handle 订阅/写入，适合观察 raw report、feature flags 和 calibration 数据。</p>
+              </div>
+              <div className="panel bg-slate-50 p-4">
+                <div className="text-sm text-slate-500">SDL wired HID</div>
+                <div className="mt-1 text-2xl font-bold">输入驱动</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">用 USB bulk endpoints 初始化设备，把数据规范化成 SDL button、axis、hat、sensor 和 rumble。</p>
+              </div>
+              <div className="panel bg-slate-50 p-4">
+                <div className="text-sm text-slate-500">gyro 状态</div>
+                <div className="mt-1 text-2xl font-bold">SDL 可用</div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">SDL 已经有完整 gyro/accel pipeline。BLE viewer 目前只证明 motion bytes 存在，缺少命名字段解析。</p>
+              </div>
+            </div>
+          </Section>
+          <Section title="核心差异矩阵" subtitle="这里按工程移植时最容易踩的边界来比。">
+            <SimpleTable headers={["维度", "BLE viewer", "SDL wired HID"]} rows={diffRows} />
+          </Section>
+        </div>
+      );
+    }
+
+    function BleGatt() {
+      return (
+        <div className="space-y-5">
+          <Section title="BLE GATT handles" subtitle="这些是 attribute handle，不是 USB endpoint，也不是 Python callback handler。">
+            <HandleTable />
+            <div className="mt-4 alert border-sky-200 bg-sky-50 text-sky-950">
+              <span>代码注释说明 Bleak 内部 handle 比 UI 显示值小 1，所以所有实际调用都用 <Code>handle - 1</Code>。</span>
+            </div>
+          </Section>
+          <Section title="Feature flags" subtitle="feature mask 的低 8 位含义来自 BLE viewer 的 UI tooltip，SDL 使用同一类 mask 但注释更少。">
+            <SimpleTable headers={["bit", "mask", "viewer 含义", "对照说明"]} rows={featureBits} />
+          </Section>
+          <Section title="BLE report layout" subtitle="viewer 的主要价值是把不同 GATT input handle 下的 raw offset 摊开。">
+            <LayoutCards />
+          </Section>
+        </div>
+      );
+    }
+
+    function SdlUsb() {
+      return (
+        <div className="space-y-5">
+          <Section title="SDL wired 初始化路径" subtitle="Bluetooth 分支目前直接返回不支持；USB 分支通过 libusb bulk transfer 完成初始化。">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                ["1", "InitDevice", "分配 context；如果 is_bluetooth 则失败，否则进入 InitUSB。"],
+                ["2", "FindBulkEndpoints", "读取 USB config，找 interface 1 里的 bulk OUT 和 bulk IN endpoint。"],
+                ["3", "ReadFlashBlock", "先读 serial、stick、gyro、accel、trigger、user calibration。"],
+                ["4", "Init sequence", "发送 0x91 初始化序列，设置 feature mask、rumble、report format 和 start output。"],
+              ].map(([n, title, body]) => (
+                <article key={title} className="panel p-4">
+                  <div className="text-xs font-bold uppercase tracking-wide text-slate-500">step {n}</div>
+                  <h3 className="mt-1 font-bold">{title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
+                </article>
+              ))}
+            </div>
+          </Section>
+          <Section title="USB 命令和 BLE 命令的关系" subtitle="同属 0x91 命令族，但 framing 字节和部分 subcommand 不一致。">
+            <CommandTable />
+          </Section>
+          <Section title="SDL gyro/accel pipeline" subtitle="这部分是 SDL 驱动比 BLE viewer 明确得多的地方。">
+            <GyroFlow />
+          </Section>
+        </div>
+      );
+    }
+
+    function PacketExamples() {
+      return (
+        <div className="space-y-5">
+          <Section title="包长什么样" subtitle="下面是按代码字段构造的示意包，便于看 header、payload、offset；不是实机抓包逐字节复刻。">
+            <SimpleTable headers={["类别", "典型形态", "说明"]} rows={framingRows} />
+          </Section>
+          <Section title="命令包与输入包示例" subtitle="BLE 命令看 0x91 头和 feature/memory payload；SDL 输入看固定 64-byte state packet。">
+            <div className="grid gap-4 xl:grid-cols-2">
+              {packetExamples.map((packet) => (
+                <article key={packet.title} className="panel p-4">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <h3 className="font-bold">{packet.title}</h3>
+                    <span className="badge badge-outline">{packet.transport}</span>
+                  </div>
+                  <p className="mb-3 text-sm leading-6 text-slate-600">{packet.summary}</p>
+                  <CodeBlock>{packet.bytes}</CodeBlock>
+                  <div className="mt-3">
+                    <SimpleTable headers={["字段", "含义"]} rows={packet.decode} />
+                  </div>
+                </article>
+              ))}
+            </div>
+          </Section>
+          <Section title="gyro 相关字段" subtitle="这几行是判断是否支持 gyro 时最有用的 offset。">
+            <div className="grid gap-4 lg:grid-cols-3">
+              <article className="panel accent-blue p-4">
+                <h3 className="font-bold">BLE viewer</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  feature bit 2 是 IMU；motion raw bytes 位于 <Code>0x2E..0x3B</Code> 或 <Code>0x0F/0x10..0x37</Code>，但 viewer 没有命名解析 gyro 轴。
+                </p>
+              </article>
+              <article className="panel accent-green p-4">
+                <h3 className="font-bold">SDL USB</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  gyro raw int16 来自 <Code>data[0x37..0x3C]</Code>，timestamp 来自 <Code>data[0x2B..0x2E]</Code>。
+                </p>
+              </article>
+              <article className="panel accent-amber p-4">
+                <h3 className="font-bold">校准</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  gyro bias 从 flash <Code>0x13040</Code> 读取，SDL 在转换 gyro_data 时会扣除 bias。
+                </p>
+              </article>
+            </div>
+          </Section>
+        </div>
+      );
+    }
+
+    function PortingNotes() {
+      return (
+        <div className="space-y-5">
+          <Section title="校准地址对照" subtitle="这些地址是两份代码最容易复用的信息。">
+            <SimpleTable headers={["地址", "内容", "对照说明"]} rows={calibrationRows} />
+          </Section>
+          <Section title="移植/实现建议" subtitle="如果要把 BLE 支持做进驱动，建议按下面的边界拆。">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <article className="panel accent-green p-4">
+                <h3 className="font-bold">可以复用 SDL 的部分</h3>
+                <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-slate-700">
+                  <li>12-bit stick calibration 解析与 axis normalization。</li>
+                  <li>state packet 到 SDL button/axis/hat 的映射思路。</li>
+                  <li>gyro/accel scale、gyro bias、timestamp coefficient 和 Joy-Con 姿态轴变换。</li>
+                  <li>HD rumble encode 和 Pro/Joy-Con/GameCube 的产品分支。</li>
+                </ul>
+              </article>
+              <article className="panel accent-amber p-4">
+                <h3 className="font-bold">不能直接复用的部分</h3>
+                <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-slate-700">
+                  <li>USB bulk endpoint 查找不能用于 BLE。BLE 必须保留 GATT service/characteristic/descriptor 流程。</li>
+                  <li>BLE 的 <Code>0x000A</Code> / <Code>0x000E</Code> layout 和 SDL 的 64-byte wired layout 不完全相同。</li>
+                  <li>flash read command 的 subcommand 和第三字节不同，需要按 transport 分开编码。</li>
+                  <li>feature mask 的生命周期不同。BLE viewer 默认 <Code>0x03</Code>，SDL 初始化会用 <Code>0x27</Code> 再根据 sensor 状态调整。</li>
+                </ul>
+              </article>
+            </div>
+          </Section>
+          <Section title="待核实点" subtitle="这些不是结论，而是从两份代码差异中冒出来的检查项。">
+            <div className="space-y-3">
+              {[
+                "BLE viewer 的 user calibration magic 是 a2 b2，SDL 使用 b2 a1，并且右摇杆用户校准地址不同。需要用实机 dump 对齐。",
+                "SDL SetJoystickSensorsEnabled(false) 构造了不含 bit 2 的 0x23，但函数末尾仍设置 sensors_enabled = true。需要确认 SDL 上层是否只会调用 enabled=true，或者这是待修复逻辑。",
+                "SDL 读取 accel bias 但当前 accel_data 转换没有扣除 bias。需要确认 bias 单位和是否应应用。",
+                "BLE viewer 的 motion plot 当前画 motion_view[:, 1..3]，更像 accel 三轴，不是 gyro 三轴。gyro 应该从后续 int16 槽位解析并标名。",
+              ].map((item) => (
+                <div key={item} className="alert border-amber-200 bg-amber-50 text-amber-950">
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </Section>
+        </div>
+      );
+    }
+
+    function App() {
+      const [tab, setTab] = useState("overview");
+      const content = useMemo(() => {
+        if (tab === "ble") return <BleGatt />;
+        if (tab === "sdl") return <SdlUsb />;
+        if (tab === "packets") return <PacketExamples />;
+        if (tab === "porting") return <PortingNotes />;
+        return <Overview />;
+      }, [tab]);
+
+      return (
+        <main className="report-shell">
+          <header className="hero-band p-5 md:p-7">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <span className="badge badge-primary badge-outline">Switch 2</span>
+                  <span className="badge badge-success badge-outline">BLE GATT</span>
+                  <span className="badge badge-warning badge-outline">USB HIDAPI</span>
+                  <span className="badge badge-info badge-outline">gyro analysis</span>
+                </div>
+                <h1 className="max-w-4xl text-3xl font-black leading-tight md:text-5xl">
+                  BLE Viewer 与 SDL 有线 HID 驱动对照报告
+                </h1>
+                <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+                  基于 <Code>switch2_input_viewer.py</Code> 和 <Code>SDL_hidapi_switch2.c</Code>，整理 handle、feature flags、初始化命令、数据包示例、report offset、校准数据和 gyro 支持差异。
+                </p>
+              </div>
+              <SourceTags />
+            </div>
+          </header>
+
+          <nav className="tabs tabs-lifted mt-6">
+            <TabButton id="overview" active={tab} onClick={setTab}>总览</TabButton>
+            <TabButton id="ble" active={tab} onClick={setTab}>BLE/GATT</TabButton>
+            <TabButton id="sdl" active={tab} onClick={setTab}>SDL USB</TabButton>
+            <TabButton id="packets" active={tab} onClick={setTab}>包示例</TabButton>
+            <TabButton id="porting" active={tab} onClick={setTab}>差异与建议</TabButton>
+          </nav>
+
+          <div className="mt-5">{content}</div>
+
+          <footer className="mt-6 text-sm leading-6 text-slate-500">
+            说明：本报告只基于当前仓库内两份参考代码静态分析。feature bit 的语义以 BLE viewer 的 tooltip 为准；SDL 中未注释的命令用途按上下文推断。
+          </footer>
+        </main>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

@@ -1,8 +1,8 @@
 # NS2Pro BLE -> Steam USB Report 0x05 实施说明
 
-> 日期：2026-05-19  
+> 日期：2026-05-20  
 > 当前阶段：Phase 5，真实 NS2 Pro / Switch 2 Pro Controller BLE 输入、player LED、rumble bridge 已进入当前虚拟 USB 路径；gyro/IMU 已有实验桥接开关  
-> 核心结论：**BLE Pro Controller 2 主输入走 GATT report `0x09`；Steam-visible 虚拟 USB 路径继续输出 HID report `0x05`；rumble 写 BLE output report `0x02` characteristic；gyro 使用 `--ble-gyro` opt-in。**
+> 核心结论：**BLE Pro Controller 2 主输入走 GATT report `0x09` characteristic；Steam-visible 虚拟 USB 路径继续输出 HID report `0x05`；rumble 写 BLE output report `0x02` characteristic；gyro 使用 `--ble-gyro` opt-in。GATT attribute handle 不是 HID report ID，也不是 USB endpoint。**
 
 ---
 
@@ -88,7 +88,75 @@ UUID:   cc483f51-9258-427d-a939-630c31f72b05
 
 用于写入 rumble payload。不要把 SDL USB-side/internal `0x50` rumble packet 写到 BLE command characteristic；当前真实可用路径是写 BLE output report `0x02` characteristic。
 
-### 1.3 当前仓库状态
+### 1.3 参考实现交叉校验
+
+本轮对照了 `references/switch2_input_viewer.py` 和 `references/SDL_hidapi_switch2.c`，得到以下实现边界：
+
+#### BLE viewer 中的 GATT attribute handles
+
+`switch2_input_viewer.py` 使用固定 GATT attribute handle，而不是按 UUID 动态查找：
+
+```text
+INPUT_HANDLES             = [0x000A, 0x000E]
+COMMAND_HANDLES           = [0x0014, 0x0016]
+COMMAND_RESPONSE_HANDLES  = [0x001A, 0x001E]
+VIBRATION_HANDLE          =  0x0012
+```
+
+代码注释说明 Bleak 后端实际传入/调用的 handle 比这些显示值小 1：
+
+```text
+UI / printed handle 0x000E -> Bleak call handle 0x000D
+UI / printed handle 0x0014 -> Bleak call handle 0x0013
+```
+
+语义如下：
+
+```text
+0x000A / 0x000E  input notification characteristics
+0x0014 / 0x0016  command write characteristics
+0x001A / 0x001E  command response notification characteristics
+0x0012           vibration/output characteristic
+input + 3        descriptor write used by viewer for report-rate setup, value 85 00
+```
+
+这些是 GATT attribute handles。不要把 `0x000E` 理解成 report ID `0x0E`，也不要把它映射到 USB endpoint。
+
+#### SDL wired HID 驱动中的 USB 事实
+
+`SDL_hidapi_switch2.c` 当前 Bluetooth 初始化仍是 TODO：
+
+```text
+Nintendo Switch2 controllers not supported over Bluetooth
+```
+
+USB 路径通过 libusb claim interface 1，并查找 bulk OUT / bulk IN endpoint。初始化和运行时主要事实：
+
+```text
+interface 1 bulk OUT/IN  -> command/setup path
+HID input read buffer    -> 64-byte state packet
+state packet buttons     -> data[5], data[6], data[7], data[8]
+state packet sticks      -> data[11]..data[16]
+sensor timestamp         -> data[0x2b]..data[0x2e]
+accelerometer raw        -> data[0x31]..data[0x36]
+gyro raw                 -> data[0x37]..data[0x3c]
+GameCube trigger raw     -> data[61], data[62]
+```
+
+SDL 的 gyro 支持比 BLE viewer 完整：它注册 `SDL_SENSOR_GYRO` / `SDL_SENSOR_ACCEL`，读取 `0x13040` 的 gyro bias，用 `gyro_coeff / INT16_MAX` 缩放 raw int16，并按 Joy-Con 左/右和姿态重排轴。
+
+#### 命令 framing 的硬边界
+
+BLE 和 USB 使用相近的 `0x91` command family，但第三字节不同：
+
+```text
+BLE command: 0x?? 0x91 0x01 ...
+USB command: 0x?? 0x91 0x00 ...
+```
+
+因此可以复用命令语义和 payload 推断，但不能把 USB 初始化字节直接写入 BLE command characteristic。BLE command characteristic 写入时第三字节必须是 `0x01`。
+
+### 1.4 当前仓库状态
 
 已经完成并验证：
 
@@ -205,7 +273,111 @@ BLE left stick:  payload[0x05:0x08] -> USB report[0x0B:0x0E]
 BLE right stick: payload[0x08:0x0B] -> USB report[0x0E:0x11]
 ```
 
-### 3.2 USB `0x05` output requirements
+### 3.2 数据包示例与 offset 对照
+
+以下示例是按当前代码字段构造的说明包，用于看 header、payload 和 offset，不是实机抓包逐字节复刻。
+
+#### BLE enable features：buttons + sticks + IMU
+
+写到 BLE command characteristic。最后的 `0x07` = bit0 button + bit1 stick + bit2 IMU。
+
+```text
+0C 91 01 04 00 04 00 00 07 00 00 00
+```
+
+拆解：
+
+```text
+0C          feature command
+91          command family
+01          Bluetooth/BLE transport byte
+04          enable features
+00
+04          payload length = 4
+00 00
+07          feature flags
+00 00 00    padding
+```
+
+对应 configure 和 disable 形态：
+
+```text
+0C 91 01 02 00 04 00 00 FF 00 00 00  configure features
+0C 91 01 05 00 04 00 00 04 00 00 00  disable IMU bit
+```
+
+#### BLE read flash：读取 gyro bias block
+
+读取 `0x13040`，长度 `0x10`。viewer 用这个地址解析 temperature + 3 个 float gyro bias。
+
+```text
+02 91 01 04 00 08 00 00 10 7E 00 00 40 30 01 00
+```
+
+拆解：
+
+```text
+02              read memory / SPI flash command
+91 01 04        BLE command header
+08              parameter length
+10              read length = 0x10
+7E 00 00        fixed fields in BLE viewer command
+40 30 01 00     address 0x00013040, little-endian
+```
+
+返回包在 viewer 中按以下方式解析：
+
+```text
+response[8]      = data length
+response[12:16]  = read address, little-endian
+response[16:]    = data
+```
+
+#### BLE input `0x000A` notification 示例
+
+`0x000A` 是 GATT input characteristic handle，不是 report ID。示意 payload：
+
+```text
+00 00 00 00 08 00 02 00 00 00 00 80 80 00 80 80
+10 00 F0 FF 20 00 01 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 34 12 10 00 F0 FF 20 00
+00 00 00 00 00 80
+```
+
+关键 offset：
+
+```text
+0x04..0x07  buttons
+0x0A..0x0C  stick1, packed 12-bit X/Y
+0x0D..0x0F  stick2, packed 12-bit X/Y
+0x10..0x17  mouse
+0x2E..0x3B  motion raw bytes
+0x3C..0x3D  analog triggers
+```
+
+#### SDL wired 64-byte state packet 示例
+
+SDL 有线驱动读的是 64-byte HID state packet，然后按 `product_id` 分派到 Pro/Joy-Con/GameCube parser。示意 packet：
+
+```text
+00 00 00 00 00 08 02 02 00 00 00 00 80 80 00 80
+80 00 00 00 00 00 00 00 00 00 00 00 78 56 34 12
+00 00 10 00 F0 FF 20 00 40 00 30 00 D0 FF 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 20 30 00
+```
+
+关键 offset：
+
+```text
+data[5]..data[8]       buttons / dpad / paddles
+data[11]..data[16]     left/right sticks, packed 12-bit X/Y
+data[0x2B]..data[0x2E] sensor timestamp
+data[0x31]..data[0x36] accelerometer int16 x/y/z
+data[0x37]..data[0x3C] gyro int16 x/y/z
+data[61], data[62]     GameCube analog triggers
+```
+
+### 3.3 USB `0x05` output requirements
 
 Build every Steam-facing input frame as 64 bytes:
 
@@ -229,7 +401,7 @@ rest         = neutral report base unless intentionally filled
 - 只输出 USB report ID `0x05`
 - 对过短 payload 直接拒绝，不发送看似 neutral 但实际 malformed 的帧
 
-### 3.3 默认 CLI 行为
+### 3.4 默认 CLI 行为
 
 Phase 3 实现应让 BLE report `0x09` 成为默认值：
 
@@ -417,6 +589,30 @@ BLE payload[33:42] = 0x00...
 
 `0x27` 沿用 SDL USB 初始化路径中的 feature bits，包含 buttons、analog sticks、IMU 等当前需要的输出位。`ndeadly/switch2_input_viewer.py` 中也把 feature bit 2 标为 IMU reporting。
 
+BLE viewer 中的 feature flag tooltip 给出了当前 bit 解释：
+
+```text
+bit 0  0x01  button state reporting
+bit 1  0x02  analog stick reporting
+bit 2  0x04  IMU reporting
+bit 3  0x08  unknown
+bit 4  0x10  mouse reporting
+bit 5  0x20  current reporting
+bit 6  0x40  unknown
+bit 7  0x80  magnetometer reporting
+```
+
+因此：
+
+```text
+0x03 = buttons + sticks
+0x07 = buttons + sticks + IMU
+0x27 = buttons + sticks + IMU + current
+0x2F = buttons + sticks + IMU + unknown bit3 + current
+```
+
+当前 `--ble-gyro` 使用 `0x27` 是为了和 SDL wired 初始化路径保持接近；如果只想最小化启用 IMU，可用 `0x07` 做实机对照。
+
 ### 6.2 BLE motion tail -> USB `0x05` sensor 区域
 
 SDL Switch 2 参考实现从 USB report `0x05` 的以下 offset 读取 sensor：
@@ -430,6 +626,16 @@ USB report[0x37:0x39] = gyro raw 0
 USB report[0x39:0x3b] = gyro raw 1
 USB report[0x3b:0x3d] = gyro raw 2
 ```
+
+SDL 后续并不是简单顺序直出三个 gyro 轴；它按以下 raw window 读出并重排/变号：
+
+```text
+gyro_data[0] <- int16(report[0x37:0x39]) * gyro_coeff / INT16_MAX - gyro_bias_x
+gyro_data[1] <- int16(report[0x3b:0x3d]) * gyro_coeff / INT16_MAX - gyro_bias_z
+gyro_data[2] <- int16(report[0x39:0x3b]) * -gyro_coeff / INT16_MAX + gyro_bias_y
+```
+
+其中 `gyro_bias_x/y/z` 来自 flash `0x13040`。当前 VIIPER BLE bridge 只把 raw compact motion tail 放入 Steam-visible sensor offsets，还没有把真实手柄 calibration bridge 到 Steam/SDL 的最终 sensor math 中。
 
 BLE report `0x09` compact format中，Pro Controller 2 motion tail 为：
 
@@ -487,8 +693,10 @@ Phase 6：稳定性
 - `captures/ns2pro/ns2pro-usb-20260519-005307/analysis/hid_out_01.tsv`
 - `captures/ns2pro/ns2pro-usb-20260519-005307/analysis/bulk_nonempty.tsv`
 - `references/SDL_hidapi_switch2.c`
+- `references/switch2_input_viewer.py`
 - `references/rumble_output.txt`
 - `joycon2cpp`
+- `docs/switch2_hid_ble_report.html`
 
 外部：
 
@@ -508,4 +716,4 @@ Phase 6：稳定性
 
 ## 9. 一句话实现规则
 
-> 订阅 BLE input report `0x09`，将 63-byte payload 解析成 controller state，重建 Steam-facing USB HID report `0x05`；rumble 从 Steam HID OUT `0x02` 转为 BLE output report `0x02` 42-byte payload 写入 `cc483f51-9258-427d-a939-630c31f72b05`；`--ble-gyro` 打开时把 BLE compact motion tail 桥接到 USB `0x05` sensor offsets；在当前抓包路径上，绝不要把 BLE `0x09` 当成 USB `0x09` 直接交给 Steam，也不要把 SDL `0x50` rumble packet 当成 BLE command。
+> 订阅 BLE input report `0x09` GATT characteristic，将 63-byte payload 解析成 controller state，重建 Steam-facing USB HID report `0x05`；rumble 从 Steam HID OUT `0x02` 转为 BLE output report `0x02` 42-byte payload 写入 `cc483f51-9258-427d-a939-630c31f72b05`；`--ble-gyro` 打开时把 BLE compact motion tail 桥接到 USB `0x05` sensor offsets；在当前抓包路径上，绝不要把 GATT attribute handle 当成 HID report ID，绝不要把 BLE `0x09` 当成 USB `0x09` 直接交给 Steam，也不要把 SDL `0x50` rumble packet 当成 BLE command。
