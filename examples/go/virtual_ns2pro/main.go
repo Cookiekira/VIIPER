@@ -31,10 +31,12 @@ func main() {
 	bleInputReport := flag.String("ble-input-report", "09", "BLE input report characteristic to use with --ble-input: 09 by default, or 05 as a fallback")
 	bleInputLog := flag.String("ble-input-log", "", "optional TSV path for raw BLE input notifications")
 	bleInputDecodeLog := flag.String("ble-input-decode-log", "", "optional TSV path for decoded BLE report 0x09 input notifications")
-	bleRumble := flag.Bool("ble-rumble", false, "write Steam HID OUT report 0x02 rumble payloads to a real NS2Pro BLE output characteristic")
-	bleAddress := flag.String("ble-address", "", "optional BLE address to connect for --ble-rumble")
+	blePlayerLED := flag.Uint("ble-player-led", 1, "BLE player LED bitmask to set after input notifications start; 0 disables")
+	bleRumble := flag.Bool("ble-rumble", false, "write Steam HID OUT report 0x02 rumble packets to the real NS2Pro BLE output report characteristic")
+	bleGyro := flag.Bool("ble-gyro", false, "experimental: enable BLE IMU reporting and bridge report 0x09 motion bytes into USB report 0x05")
+	bleAddress := flag.String("ble-address", "", "optional BLE address to connect for BLE input/rumble/gyro")
 	bleName := flag.String("ble-name", "Pro Controller", "BLE local-name substring to scan for when --ble-address is empty")
-	bleScanTimeout := flag.Duration("ble-scan-timeout", 12*time.Second, "BLE scan/connect timeout for --ble-rumble")
+	bleScanTimeout := flag.Duration("ble-scan-timeout", 12*time.Second, "BLE scan/connect timeout")
 	bleWriteWithResponse := flag.Bool("ble-write-with-response", false, "use BLE Write Request instead of Write Without Response")
 	printKeymap := flag.Bool("print-keymap", false, "print the keyboard mapping used by --keyboard")
 	holdA := flag.Bool("hold-a", false, "hold a synthetic A button in dummy input reports")
@@ -50,6 +52,14 @@ func main() {
 	}
 	if inputModeCount > 1 {
 		fmt.Fprintln(os.Stderr, "--keyboard, --terminal, and --ble-input are mutually exclusive")
+		os.Exit(2)
+	}
+	if *blePlayerLED > 0xff {
+		fmt.Fprintln(os.Stderr, "--ble-player-led must be between 0 and 255")
+		os.Exit(2)
+	}
+	if *bleGyro && !*bleInput {
+		fmt.Fprintln(os.Stderr, "--ble-gyro requires --ble-input")
 		os.Exit(2)
 	}
 
@@ -93,24 +103,42 @@ func main() {
 		fmt.Printf("Keyboard mode enabled. Polling local keyboard every %s.\n", interval.String())
 	}
 	var bleInputClient *BLEInputClient
+	var bleWriter BLEOutputWriter
 	if *bleInput {
 		var err error
 		bleInputClient, err = ConnectBLEInput(ctx, BLEInputOptions{
-			Address:       *bleAddress,
-			NameContains:  *bleName,
-			Timeout:       *bleScanTimeout,
-			Report:        *bleInputReport,
-			RawLogPath:    *bleInputLog,
-			DecodeLogPath: *bleInputDecodeLog,
+			Address:           *bleAddress,
+			NameContains:      *bleName,
+			Timeout:           *bleScanTimeout,
+			Report:            *bleInputReport,
+			RawLogPath:        *bleInputLog,
+			DecodeLogPath:     *bleInputDecodeLog,
+			PlayerLED:         byte(*blePlayerLED),
+			WriteWithResponse: *bleWriteWithResponse,
+			EnableGyro:        *bleGyro,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "BLE input setup failed: %v\n", err)
 			return
 		}
 		defer bleInputClient.Close()
+		if *bleGyro {
+			if err := bleInputClient.EnableBLEGyro(); err != nil {
+				fmt.Fprintf(os.Stderr, "BLE gyro setup failed: %v\n", err)
+				return
+			}
+			fmt.Printf("BLE gyro bridge enabled on the existing BLE input connection.\n")
+		}
+		if *bleRumble {
+			if err := bleInputClient.EnableBLERumble(); err != nil {
+				fmt.Fprintf(os.Stderr, "BLE rumble setup failed: %v\n", err)
+				return
+			}
+			bleWriter = bleInputClient
+			fmt.Printf("BLE rumble enabled on the existing BLE input connection.\n")
+		}
 	}
-	var bleWriter BLEOutputWriter
-	if *bleRumble {
+	if *bleRumble && bleWriter == nil {
 		ble, err := ConnectBLERumble(ctx, BLERumbleOptions{
 			Address:           *bleAddress,
 			NameContains:      *bleName,

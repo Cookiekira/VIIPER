@@ -13,6 +13,7 @@ import (
 const (
 	ns2BLEServiceUUIDString  = "ab7de9be-89fe-49ad-828f-118f09df7fd0"
 	ns2BLEOutput02UUIDString = "cc483f51-9258-427d-a939-630c31f72b05"
+	ns2BLECommandUUIDString  = "649d4ac9-8eb7-4e6c-af44-1ea54fe5f005"
 	ns2BLECompanyID          = 0x0553
 )
 

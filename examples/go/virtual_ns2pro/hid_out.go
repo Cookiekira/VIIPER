@@ -29,7 +29,7 @@ func logHIDOutput(stream *apiclient.DeviceStream, options HIDOutputLogOptions) {
 			return
 		}
 		defer file.Close()
-		fmt.Fprintln(file, "time\tlen\thex\tble_output_02_preview")
+		fmt.Fprintln(file, "time\tlen\thex\tble_rumble_preview")
 		fmt.Printf("Writing HID OUT reports to %s\n", options.Path)
 	}
 
@@ -90,14 +90,17 @@ func rumbleNonZero(report []byte) (left bool, right bool) {
 	if len(report) < 33 || report[0] != 0x02 {
 		return false, false
 	}
-	return anyNonZero(report[1:17]), anyNonZero(report[17:33])
+	left = hdRumbleEncodedAmplitudeNonZero(report[2:7])
+	right = hdRumbleEncodedAmplitudeNonZero(report[18:23])
+	return left, right
 }
 
-func anyNonZero(data []byte) bool {
-	for _, b := range data {
-		if b != 0 {
-			return true
-		}
+func hdRumbleEncodedAmplitudeNonZero(data []byte) bool {
+	if len(data) < 5 {
+		return false
 	}
-	return false
+	return data[1]&0xfc != 0 ||
+		data[2]&0x0f != 0 ||
+		data[3]&0xc0 != 0 ||
+		data[4] != 0
 }
