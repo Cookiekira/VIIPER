@@ -9,6 +9,7 @@ import (
 	"net"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
 	"github.com/Alia5/VIIPER/apiclient"
@@ -92,9 +93,17 @@ func TestDescriptor(t *testing.T) {
 	assert.Equal(t, uint16(0x0200), desc.Device.BcdDevice)
 	assert.Equal(t, "Switch 2 Pro Controller", desc.Strings[2])
 	assert.Equal(t, DefaultSerial, desc.Strings[3])
+	assert.Equal(t, "Nintendo Switch 2 Pro Controller", desc.Strings[4])
 	assert.Equal(t, "Nintendo Switch 2 Pro Controller", desc.Strings[5])
 	assert.Equal(t, "Vendor Interface", desc.Strings[6])
-	require.Len(t, desc.Interfaces, 2)
+	assert.Equal(t, byte(0x04), desc.Configuration.IConfiguration)
+	assert.Equal(t, byte(0xC0), desc.Configuration.BMAttributes)
+	assert.Equal(t, byte(0xFA), desc.Configuration.BMaxPower)
+	require.NotNil(t, desc.MicrosoftOS10)
+	assert.Equal(t, byte(microsoftOS10VendorCode), desc.MicrosoftOS10.VendorCode)
+	assert.Equal(t, uint8(5), desc.NumInterfaces())
+	require.Len(t, desc.Associations, 3)
+	require.Len(t, desc.Interfaces, 7)
 
 	hidIface := desc.Interfaces[0]
 	assert.Equal(t, byte(0x03), hidIface.Descriptor.BInterfaceClass)
@@ -111,6 +120,24 @@ func TestDescriptor(t *testing.T) {
 	require.Len(t, bulkIface.Endpoints, 2)
 	assert.Equal(t, byte(EndpointBulkOut), bulkIface.Endpoints[0].BEndpointAddress)
 	assert.Equal(t, byte(EndpointBulkIn), bulkIface.Endpoints[1].BEndpointAddress)
+
+	audioControlIface := desc.Interfaces[2]
+	assert.Equal(t, byte(0x02), audioControlIface.Descriptor.BInterfaceNumber)
+	assert.Equal(t, byte(0x01), audioControlIface.Descriptor.BInterfaceClass)
+	assert.Equal(t, byte(0x01), audioControlIface.Descriptor.BInterfaceSubClass)
+	require.Len(t, audioControlIface.ClassDescriptors, 7)
+
+	audioOutStreaming := desc.Interfaces[4]
+	assert.Equal(t, byte(0x03), audioOutStreaming.Descriptor.BInterfaceNumber)
+	assert.Equal(t, byte(0x01), audioOutStreaming.Descriptor.BAlternateSetting)
+	require.Len(t, audioOutStreaming.Endpoints, 1)
+	assert.Equal(t, byte(0x03), audioOutStreaming.Endpoints[0].BEndpointAddress)
+
+	audioInStreaming := desc.Interfaces[6]
+	assert.Equal(t, byte(0x04), audioInStreaming.Descriptor.BInterfaceNumber)
+	assert.Equal(t, byte(0x01), audioInStreaming.Descriptor.BAlternateSetting)
+	require.Len(t, audioInStreaming.Endpoints, 1)
+	assert.Equal(t, byte(0x83), audioInStreaming.Endpoints[0].BEndpointAddress)
 }
 
 func TestBuildReport09(t *testing.T) {
@@ -162,16 +189,52 @@ func TestBulkCommands(t *testing.T) {
 	assert.Equal(t, byte(ReportIDCommon), report[0])
 
 	dev.HandleTransfer(2, usbip.DirOut, flashReadCommand(0x13000))
-	first := dev.HandleTransfer(2, usbip.DirIn, nil)
-	second := dev.HandleTransfer(2, usbip.DirIn, nil)
-	require.Len(t, first, 64)
-	require.Len(t, second, 16)
-	assert.Equal(t, []byte{0x02, 0x01, 0x01, 0x01}, first[0:4])
-	assert.Equal(t, byte(0x40), first[8])
-	assert.Equal(t, uint32(0x13000), binary.LittleEndian.Uint32(first[12:16]))
-	flash := append(append([]byte{}, first[16:]...), second...)
+	resp := dev.HandleTransfer(2, usbip.DirIn, nil)
+	require.Len(t, resp, 0x50)
+	assert.Equal(t, []byte{0x02, 0x01, 0x01, 0x01}, resp[0:4])
+	assert.Equal(t, byte(0x40), resp[8])
+	assert.Equal(t, uint32(0x13000), binary.LittleEndian.Uint32(resp[12:16]))
+	flash := resp[16:]
 	require.Len(t, flash, 64)
 	assert.Equal(t, "VIIPER-NS2PRO-00", string(flash[2:18]))
+}
+
+func TestSDLUSBInitializationSequence(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+
+	for _, address := range []uint32{0x13000, 0x13040, 0x13080, 0x130C0, 0x13100, 0x1FC040, 0x1FC080} {
+		dev.HandleTransfer(2, usbip.DirOut, flashReadCommand(address))
+		resp := dev.HandleTransfer(2, usbip.DirIn, nil)
+		require.Len(t, resp, 0x50, "flash block %#x", address)
+		assert.Equal(t, []byte{0x02, 0x01, 0x01, 0x01}, resp[0:4])
+		assert.Equal(t, byte(0x40), resp[8])
+		assert.Equal(t, address, binary.LittleEndian.Uint32(resp[12:16]))
+	}
+
+	initSequence := [][]byte{
+		{0x07, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+		{0x0C, 0x91, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00},
+		{0x11, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+		{0x0A, 0x91, 0x00, 0x08, 0x00, 0x14, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x35, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		{0x0C, 0x91, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00},
+		{0x01, 0x91, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00},
+		{0x01, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+		{0x08, 0x91, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00},
+		{0x03, 0x91, 0x00, 0x0A, 0x00, 0x04, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00},
+		{0x03, 0x91, 0x00, 0x0D, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+	}
+	for _, cmd := range initSequence {
+		dev.HandleTransfer(2, usbip.DirOut, cmd)
+		assert.NotEmpty(t, dev.HandleTransfer(2, usbip.DirIn, nil), "cmd %#x sub %#x", cmd[0], cmd[3])
+	}
+
+	dev.UpdateInputState(InputState{BatteryLevel: 9})
+	report := dev.HandleTransfer(1, usbip.DirIn, nil)
+	require.Len(t, report, InputReportSize)
+	assert.Equal(t, byte(ReportIDCommon), report[0])
+	assert.Equal(t, uint32(1), binary.LittleEndian.Uint32(report[1:5]))
+	assert.Equal(t, uint32(4000), binary.LittleEndian.Uint32(report[0x2B:0x2F]))
 }
 
 func TestRumbleOutput(t *testing.T) {
@@ -212,6 +275,40 @@ func TestRumbleOutput(t *testing.T) {
 	assert.Equal(t, byte(0xC0), got.RightRumble[0])
 }
 
+func TestMicrosoftOS10WinUSBDescriptor(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+
+	resp, handled := dev.HandleControl(0xC0, microsoftOS10VendorCode, 0, 0x0004, 40, nil)
+	require.True(t, handled)
+	require.Len(t, resp, 40)
+	assert.Equal(t, uint32(40), binary.LittleEndian.Uint32(resp[0:4]))
+	assert.Equal(t, uint16(0x0100), binary.LittleEndian.Uint16(resp[4:6]))
+	assert.Equal(t, uint16(0x0004), binary.LittleEndian.Uint16(resp[6:8]))
+	assert.Equal(t, byte(0x01), resp[8])
+	assert.Equal(t, byte(0x01), resp[16])
+	assert.Equal(t, []byte("WINUSB\x00\x00"), resp[18:26])
+}
+
+func TestMicrosoftOS10ExtendedPropertiesDescriptor(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+
+	resp, handled := dev.HandleControl(0xC1, microsoftOS10VendorCode, 0, 0x0005, 0x008E, nil)
+	require.True(t, handled)
+	require.Len(t, resp, 142)
+	assert.Equal(t, uint32(142), binary.LittleEndian.Uint32(resp[0:4]))
+	assert.Equal(t, uint16(0x0100), binary.LittleEndian.Uint16(resp[4:6]))
+	assert.Equal(t, uint16(0x0005), binary.LittleEndian.Uint16(resp[6:8]))
+	assert.Equal(t, uint16(1), binary.LittleEndian.Uint16(resp[8:10]))
+	assert.Equal(t, uint32(132), binary.LittleEndian.Uint32(resp[10:14]))
+	assert.Equal(t, uint32(1), binary.LittleEndian.Uint32(resp[14:18]))
+	assert.Equal(t, uint16(40), binary.LittleEndian.Uint16(resp[18:20]))
+	assert.Equal(t, uint32(78), binary.LittleEndian.Uint32(resp[60:64]))
+	assert.Contains(t, utf16leToString(resp[20:60]), "DeviceInterfaceGUID")
+	assert.Contains(t, utf16leToString(resp[64:]), microsoftOS10DeviceInterfaceGUID)
+}
+
 func TestStreamInputAndRumble(t *testing.T) {
 	s := viiperTesting.NewTestServer(t)
 	defer s.UsbServer.Close()
@@ -248,6 +345,27 @@ func TestStreamInputAndRumble(t *testing.T) {
 	serialString, err := controlIn(imp.Conn, controlSetup(0x80, 0x06, 0x0303, 0, 64))
 	require.NoError(t, err)
 	assert.Equal(t, usb.EncodeStringDescriptor(DefaultSerial), serialString)
+
+	msOSString, err := controlIn(imp.Conn, controlSetup(0x80, 0x06, 0x03EE, 0, 18))
+	require.NoError(t, err)
+	assert.Equal(t, []byte{
+		0x12, 0x03,
+		'M', 0x00,
+		'S', 0x00,
+		'F', 0x00,
+		'T', 0x00,
+		'1', 0x00,
+		'0', 0x00,
+		'0', 0x00,
+		microsoftOS10VendorCode, 0x00,
+	}, msOSString)
+
+	config, err := controlIn(imp.Conn, controlSetup(0x80, 0x06, 0x0200, 0, 512))
+	require.NoError(t, err)
+	require.Len(t, config, 0x010C)
+	assert.Equal(t, []byte{0x09, 0x02, 0x0C, 0x01, 0x05, 0x01, 0x04, 0xC0, 0xFA}, config[:9])
+	assert.Equal(t, []byte{0x08, 0x0B, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00}, config[9:17])
+	assert.Equal(t, []byte{0x08, 0x0B, 0x02, 0x03, 0x01, 0x01, 0x00, 0x00}, config[80:88])
 
 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirOut, 2, selectReportCommand(ReportIDPro), nil))
 
@@ -305,6 +423,18 @@ func mustHexBytes(t *testing.T, s string) []byte {
 	out, err := hex.DecodeString(s)
 	require.NoError(t, err)
 	return out
+}
+
+func utf16leToString(b []byte) string {
+	units := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		u := binary.LittleEndian.Uint16(b[i : i+2])
+		if u == 0 {
+			break
+		}
+		units = append(units, u)
+	}
+	return string(utf16.Decode(units))
 }
 
 func controlSetup(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16) [8]byte {

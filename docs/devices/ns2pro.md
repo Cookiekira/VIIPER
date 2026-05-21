@@ -36,12 +36,14 @@ gyro/accelerometer data, and HD rumble output.
     ## Notes
 
     VIIPER implements the HID and vendor bulk command paths needed by SDL's Switch 2
-    driver. The `ns2pro` profile intentionally stays minimal: product string
-    `Switch 2 Pro Controller`, serial `00`, `bcdDevice=0x0200`, two interfaces
-    (HID plus vendor bulk), and no Microsoft OS/WinUSB descriptors.
+    driver. The USB identity mirrors a wired Switch 2 Pro Controller closely enough
+    for host-side drivers to find the HID interface and vendor bulk interface:
+    product string `Switch 2 Pro Controller`, serial `00`, `bcdDevice=0x0200`,
+    HID plus vendor bulk interfaces, Microsoft OS 1.0 compatible ID and extended
+    properties descriptors that bind the vendor bulk interface to WinUSB on
+    Windows, and the original audio interface layout for enumeration compatibility.
 
-    NFC, Bluetooth GATT, headset audio streaming, and the full original
-    multi-interface audio configuration are not emulated.
+    NFC, Bluetooth GATT, and headset audio streaming are not emulated.
 
     Gyro and accelerometer values are raw report values. Clients that need physical
     units should convert them according to their target host or driver conventions.

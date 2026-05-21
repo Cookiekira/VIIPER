@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="corporate">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VIIPER NS2Pro Steam 识别问题诊断报告</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.24/dist/full.min.css" rel="stylesheet" type="text/css">
+  <style>
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    .section {
+      scroll-margin-top: 5rem;
+    }
+  </style>
+</head>
+<body class="bg-base-200 text-base-content">
+  <div class="navbar sticky top-0 z-10 bg-base-100/95 shadow-sm backdrop-blur">
+    <div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4">
+      <div>
+        <div class="text-lg font-semibold">VIIPER NS2Pro Steam 诊断报告</div>
+        <div class="text-xs text-base-content/60">Bluetooth NS2Pro → Virtual USB NS2Pro → Steam</div>
+      </div>
+      <div class="hidden gap-2 md:flex">
+        <a class="btn btn-ghost btn-sm" href="#conclusion">结论</a>
+        <a class="btn btn-ghost btn-sm" href="#timeline">过程</a>
+        <a class="btn btn-ghost btn-sm" href="#changes">修改</a>
+        <a class="btn btn-ghost btn-sm" href="#verification">验证</a>
+      </div>
+    </div>
+  </div>
+
+  <main class="mx-auto max-w-6xl px-4 py-8">
+    <section class="section mb-8" id="conclusion">
+      <div class="hero rounded-lg bg-base-100 shadow-sm">
+        <div class="hero-content w-full justify-start p-8">
+          <div class="max-w-4xl">
+            <div class="badge badge-success mb-4">已解决</div>
+            <h1 class="mb-4 text-3xl font-bold tracking-normal md:text-4xl">
+              Steam 最终正确识别虚拟 NS2Pro
+            </h1>
+            <p class="max-w-3xl text-base leading-7 text-base-content/75">
+              根因不是按键 report、gyro 数据或 bulk 协议内容错误，而是 Windows 没有把虚拟设备的
+              <span class="mono">MI_01</span> vendor bulk interface 以应用可稳定发现的 WinUSB device interface 暴露给 Steam/SDL。
+              补齐 Microsoft OS 1.0 Extended Properties descriptor 中的
+              <span class="mono">DeviceInterfaceGUID</span> 后，Steam 才开始进入 Switch2 专用路径并访问
+              <span class="mono">ep=2</span> bulk endpoint。
+            </p>
+            <div class="mt-6 grid gap-3 md:grid-cols-3">
+              <div class="stat rounded-lg bg-base-200">
+                <div class="stat-title">最终信号</div>
+                <div class="stat-value text-success">ep=2</div>
+                <div class="stat-desc">Steam 访问 bulk endpoint</div>
+              </div>
+              <div class="stat rounded-lg bg-base-200">
+                <div class="stat-title">关键修复</div>
+                <div class="stat-value text-primary">GUID</div>
+                <div class="stat-desc">WinUSB interface 可发现</div>
+              </div>
+              <div class="stat rounded-lg bg-base-200">
+                <div class="stat-title">设备模式</div>
+                <div class="stat-value text-secondary">USB</div>
+                <div class="stat-desc">BLE 输入桥接到虚拟 USB</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section mb-8" id="problem">
+      <div class="grid gap-6 lg:grid-cols-2">
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">初始目标</h2>
+            <p class="leading-7 text-base-content/75">
+              参考 <span class="mono">switch2_input_viewer.py</span> 和
+              <span class="mono">bluetooth_interface.md</span>，实现 NS2Pro 蓝牙连接，然后由 VIIPER 模拟成
+              USB 连接的 NS2Pro 手柄。这样绕过 Windows 不支持 NS2Pro 蓝牙 HID 的限制，让 Steam 在手柄蓝牙连接前就识别到一个虚拟
+              USB NS2Pro。
+            </p>
+          </div>
+        </div>
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">实际症状</h2>
+            <ul class="list-disc space-y-2 pl-5 text-base-content/75">
+              <li>设备名称正确，按钮可用。</li>
+              <li>Steam 的 Begin Test layout 仍是通用手柄。</li>
+              <li>缺少 NS2Pro 专属项，如 GL、GR、gyro、LED 等。</li>
+              <li>Go example 曾经“看起来成功”，后来确认是先前真实有线 NS2Pro 留下的设备/Steam 状态造成的假象。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section mb-8" id="timeline">
+      <div class="card bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">诊断时间线</h2>
+          <ul class="timeline timeline-vertical lg:timeline-horizontal">
+            <li>
+              <div class="timeline-start">1</div>
+              <div class="timeline-middle"><div class="badge badge-primary badge-sm"></div></div>
+              <div class="timeline-end timeline-box">实现 Python BLE bridge，先创建虚拟 NS2Pro，再等待蓝牙手柄输入。</div>
+              <hr>
+            </li>
+            <li>
+              <hr>
+              <div class="timeline-start">2</div>
+              <div class="timeline-middle"><div class="badge badge-primary badge-sm"></div></div>
+              <div class="timeline-end timeline-box">发现 Steam 仍走 generic layout，且 Go example 冷启动也一样。</div>
+              <hr>
+            </li>
+            <li>
+              <hr>
+              <div class="timeline-start">3</div>
+              <div class="timeline-middle"><div class="badge badge-primary badge-sm"></div></div>
+              <div class="timeline-end timeline-box">补齐真机式复合 USB 描述符：IAD、vendor bulk、audio interfaces、WinUSB compatible ID。</div>
+              <hr>
+            </li>
+            <li>
+              <hr>
+              <div class="timeline-start">4</div>
+              <div class="timeline-middle"><div class="badge badge-warning badge-sm"></div></div>
+              <div class="timeline-end timeline-box">MI_01 从 Error 变为 OK，但 Steam 仍不访问 ep=2。</div>
+              <hr>
+            </li>
+            <li>
+              <hr>
+              <div class="timeline-start">5</div>
+              <div class="timeline-middle"><div class="badge badge-success badge-sm"></div></div>
+              <div class="timeline-end timeline-box">加入 Extended Properties / DeviceInterfaceGUID，清理旧实例后 Steam 正确识别。</div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section mb-8" id="evidence">
+      <div class="grid gap-6 lg:grid-cols-3">
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">关键证据 A</h2>
+            <p class="leading-7 text-base-content/75">
+              <span class="mono">Get-PnpDevice</span> 显示 <span class="mono">MI_01</span> 后来已经是
+              <span class="mono">Status OK</span>，说明 vendor interface 的 Windows 驱动绑定已不再是 Error。
+            </p>
+          </div>
+        </div>
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">关键证据 B</h2>
+            <p class="leading-7 text-base-content/75">
+              诊断 trace 起初没有任何 <span class="mono">ep=2 dir=OUT</span>，说明 Steam 没有进入 SDL Switch2
+              USB 初始化路径。
+            </p>
+          </div>
+        </div>
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">关键证据 C</h2>
+            <p class="leading-7 text-base-content/75">
+              真实 NS2Pro 有线接入一次后，虚拟设备能被正确识别，说明 Steam/Windows 需要某种真实设备枚举时产生的接口发现状态或缓存。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section mb-8" id="changes">
+      <div class="card bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">代码修改摘要</h2>
+          <div class="overflow-x-auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>区域</th>
+                  <th>修改</th>
+                  <th>目的</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono">examples/python/virtual_ns2pro_ble_bridge.py</td>
+                  <td>新增单文件 uv 脚本，启动即创建虚拟 NS2Pro，并桥接 BLE input。</td>
+                  <td>让 Steam 在真实蓝牙手柄连接前先看到 USB NS2Pro。</td>
+                </tr>
+                <tr>
+                  <td class="mono">usb/usbdesc.go</td>
+                  <td>增加 configuration、IAD、alternate setting、endpoint class descriptor、MS OS 1.0 支持。</td>
+                  <td>表达真机 NS2Pro 的复合 USB 拓扑。</td>
+                </tr>
+                <tr>
+                  <td class="mono">internal/server/usb/server.go</td>
+                  <td>配置描述符构建支持 IAD、audio alternate interfaces、string 0xEE。</td>
+                  <td>让 Windows 枚举出 HID、vendor、audio 多接口布局。</td>
+                </tr>
+                <tr>
+                  <td class="mono">device/ns2pro/device.go</td>
+                  <td>补齐真机接口布局、WinUSB compatible ID、Extended Properties、audio class control stub。</td>
+                  <td>让 Windows 和 Steam/SDL 能发现并初始化 vendor bulk interface。</td>
+                </tr>
+                <tr>
+                  <td class="mono">device/ns2pro/device.go</td>
+                  <td>bulk response 不再按 64 字节拆队列。</td>
+                  <td>避免 SDL 一次 bulk read 读取 0x50 flash 响应时发生残包错位。</td>
+                </tr>
+                <tr>
+                  <td class="mono">device/ns2pro/ns2pro_test.go</td>
+                  <td>新增 SDL USB 初始化序列、MS OS descriptor、配置描述符相关测试。</td>
+                  <td>锁住 Steam 识别依赖的枚举和初始化行为。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section mb-8" id="protocol">
+      <div class="grid gap-6 lg:grid-cols-2">
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">Steam/SDL 期望路径</h2>
+            <div class="mockup-code text-sm">
+              <pre data-prefix="1"><code>识别 VID_057E PID_2069</code></pre>
+              <pre data-prefix="2"><code>获取 libusb/WinUSB device handle</code></pre>
+              <pre data-prefix="3"><code>查找 interface 1 的 bulk endpoints</code></pre>
+              <pre data-prefix="4"><code>claim interface 1</code></pre>
+              <pre data-prefix="5"><code>读取 flash calibration blocks</code></pre>
+              <pre data-prefix="6"><code>发送 0x0c / 0x03 初始化命令</code></pre>
+              <pre data-prefix="7"><code>切换 report 0x05，启用 gyro/GL/GR/LED</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="card bg-base-100 shadow-sm">
+          <div class="card-body">
+            <h2 class="card-title">诊断阶段 trace 关注点</h2>
+            <div class="mockup-code text-sm">
+              <pre data-prefix="$"><code>临时启用 NS2Pro endpoint trace</code></pre>
+              <pre data-prefix="✓"><code>ep=2 dir=OUT out=02 91 ...</code></pre>
+              <pre data-prefix="✓"><code>ep=2 dir=OUT out=0c 91 ...</code></pre>
+              <pre data-prefix="✓"><code>ep=2 dir=OUT out=03 91 ...</code></pre>
+            </div>
+            <p class="mt-4 leading-7 text-base-content/75">
+              诊断阶段看到 <span class="mono">ep=2</span> 记录，就说明 Steam 已经不再只走 generic HID，而是开始执行 Switch2
+              专用 USB 初始化。最终实现已移除运行时 trace 代码。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section mb-8" id="verification">
+      <div class="card bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">验证结果</h2>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="alert alert-success">
+              <span class="font-semibold">通过：</span>
+              <span class="mono">TestSDLUSBInitializationSequence</span>
+            </div>
+            <div class="alert alert-success">
+              <span class="font-semibold">通过：</span>
+              <span class="mono">TestMicrosoftOS10WinUSBDescriptor</span>
+            </div>
+            <div class="alert alert-success">
+              <span class="font-semibold">通过：</span>
+              <span class="mono">TestMicrosoftOS10ExtendedPropertiesDescriptor</span>
+            </div>
+            <div class="alert alert-success">
+              <span class="font-semibold">通过：</span>
+              <span>用户实测 Steam 正确识别虚拟 NS2Pro</span>
+            </div>
+          </div>
+          <div class="mt-5 rounded-lg bg-base-200 p-4">
+            <div class="mb-2 font-semibold">注意</div>
+            <p class="leading-7 text-base-content/75">
+              Windows 会缓存 USB 设备实例和 Microsoft OS descriptor 结果。因此修改 WinUSB / OS descriptor 后，
+              需要移除旧的 <span class="mono">VID_057E&PID_2069</span> PnP 实例并重新枚举设备，必要时重启 Windows 和 Steam。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="takeaways">
+      <div class="card bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title">结论沉淀</h2>
+          <div class="grid gap-4 md:grid-cols-3">
+            <div class="rounded-lg border border-base-300 p-4">
+              <div class="mb-2 font-semibold">不要只看名称和 VID/PID</div>
+              <p class="text-sm leading-6 text-base-content/70">Steam 的高级 layout 依赖 Switch2 专用驱动路径，不是 HID 名称匹配。</p>
+            </div>
+            <div class="rounded-lg border border-base-300 p-4">
+              <div class="mb-2 font-semibold">WinUSB 可发现性是关键</div>
+              <p class="text-sm leading-6 text-base-content/70">Composite 设备的 vendor interface 需要 compatible ID 和 device interface GUID。</p>
+            </div>
+            <div class="rounded-lg border border-base-300 p-4">
+              <div class="mb-2 font-semibold">trace 比猜协议快</div>
+              <p class="text-sm leading-6 text-base-content/70">没有 <span class="mono">ep=2</span> 就不要继续调 bulk payload，先修枚举链路。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
