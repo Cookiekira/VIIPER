@@ -39,9 +39,9 @@ gyro/accelerometer data, and HD rumble output.
     driver. The USB identity mirrors a wired Switch 2 Pro Controller closely enough
     for host-side drivers to find the HID interface and vendor bulk interface:
     product string `Switch 2 Pro Controller`, serial `00`, `bcdDevice=0x0200`,
-    HID plus vendor bulk interfaces, Microsoft OS 1.0 compatible ID and extended
-    properties descriptors that bind the vendor bulk interface to WinUSB on
-    Windows, and the original audio interface layout for enumeration compatibility.
+    HID plus vendor bulk interfaces, and Microsoft OS 1.0 compatible ID and
+    extended properties descriptors that bind the vendor bulk interface to WinUSB
+    on Windows.
 
     NFC, Bluetooth GATT, and headset audio streaming are not emulated.
 

@@ -1,6 +1,7 @@
 # /// script
 # dependencies = [
 #   "bleak",
+#   "pycryptodome",
 # ]
 # ///
 """
@@ -23,12 +24,17 @@ import asyncio
 import json
 import logging
 import platform
+import re
+import secrets
 import socket
 import struct
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from bleak import BleakClient, BleakScanner
+from Crypto.Cipher import AES
 
 
 LOG = logging.getLogger("virtual_ns2pro_ble_bridge")
@@ -36,6 +42,7 @@ LOG = logging.getLogger("virtual_ns2pro_ble_bridge")
 NINTENDO_MANUFACTURER_ID = 0x0553
 NINTENDO_VID = 0x057E
 NS2PRO_PID = 0x2069
+DEFAULT_CACHE_FILE = Path.home() / ".viiper" / "ns2pro_ble_device.json"
 
 INPUT_WIRE_SIZE = 27
 OUTPUT_WIRE_SIZE = 32
@@ -72,7 +79,6 @@ FEATURE_BUTTONS = 0x01
 FEATURE_STICKS = 0x02
 FEATURE_IMU = 0x04
 DEFAULT_FEATURE_FLAGS = FEATURE_BUTTONS | FEATURE_STICKS | FEATURE_IMU
-DEFAULT_LED_PATTERN = 0b0110
 
 # Bleak on Windows addresses GATT attributes one lower than the documented
 # handles used in switch2_input_viewer.py.
@@ -98,6 +104,54 @@ def parse_addr(addr: str) -> tuple[str, int]:
     if not sep or not host:
         raise ValueError(f"invalid API address {addr!r}; expected host:port")
     return host, int(port)
+
+
+def parse_bluetooth_address(address: str) -> bytes:
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", address)
+    if len(cleaned) != 12:
+        raise ValueError(f"invalid Bluetooth address {address!r}; expected 6 bytes")
+    return bytes.fromhex(cleaned)
+
+
+def format_bluetooth_address(address: bytes) -> str:
+    return ":".join(f"{b:02X}" for b in address)
+
+
+def detect_windows_bluetooth_address() -> str:
+    if platform.system() != "Windows":
+        return ""
+    script = (
+        "Get-NetAdapter -Physical | "
+        "Where-Object { $_.InterfaceDescription -match 'Bluetooth' -or $_.Name -match 'Bluetooth' } | "
+        "Select-Object -First 1 -ExpandProperty MacAddress"
+    )
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", script],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception as exc:
+        LOG.debug("Could not detect Bluetooth adapter address: %s", exc)
+        return ""
+    return out.strip()
+
+
+def controller_command(command: int, subcommand: int, payload: bytes = b"", seq: int = 1) -> bytes:
+    if len(payload) > 0xFF:
+        raise ValueError("controller command payload too large")
+    return bytes([command, 0x91, seq & 0xFF, subcommand, 0x00, len(payload), 0x00, 0x00]) + payload
+
+
+def controller_response_payload(response: bytes, command: int, subcommand: int) -> bytes:
+    if len(response) < 8:
+        raise RuntimeError(f"short controller response: {response.hex()}")
+    if response[0] != command or response[3] != subcommand:
+        raise RuntimeError(
+            f"unexpected controller response for {command:02x}/{subcommand:02x}: {response.hex()}"
+        )
+    return response[8:]
 
 
 def viiper_request(addr: tuple[str, int], path: str, payload: Any = None) -> dict[str, Any]:
@@ -306,7 +360,6 @@ class BLEController:
         self.latest_input: NS2ProInput | None = None
         self.command_event = asyncio.Event()
         self.command_response = b""
-        self.device_info: dict[str, Any] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -324,10 +377,14 @@ class BLEController:
                 return
             vid = struct.unpack("<H", manu[3:5])[0]
             pid = struct.unpack("<H", manu[5:7])[0]
-            is_standard_advertisement = manu[12] == 0
-            if vid == NINTENDO_VID and pid == NS2PRO_PID and is_standard_advertisement:
+            # Bleak's manufacturer_data value excludes the 0x0553 company ID.
+            # Offset 9 is the Switch 2 advertisement mode: 0x00 for standard or
+            # reconnection, 0x81 for Home-button wake advertisements.
+            adv_mode = manu[9] if len(manu) > 9 else 0
+            if vid == NINTENDO_VID and pid == NS2PRO_PID and adv_mode in (0x00, 0x81):
                 found = device
-                LOG.info("Found NS2Pro BLE device %s (%s)", device.address, device.name)
+                mode = "wake" if adv_mode == 0x81 else "standard/reconnect"
+                LOG.info("Found NS2Pro BLE device %s (%s, %s)", device.address, device.name, mode)
                 stop_event.set()
 
         async with BleakScanner(on_advertisement):
@@ -339,7 +396,7 @@ class BLEController:
             self.connected = False
             LOG.warning("BLE controller disconnected")
 
-        LOG.info("Connecting to BLE controller %s...", device.address)
+        LOG.info("Connecting to BLE controller %s...", getattr(device, "address", device))
         self.client = BleakClient(device, disconnected_callback=on_disconnect)
         await self.client.connect()
         self.connected = True
@@ -349,28 +406,11 @@ class BLEController:
         if self.client is None:
             raise RuntimeError("BLE client is not connected")
 
-        LOG.info("Initializing BLE controller over basic command channel")
-        try:
-            self.device_info["remote_name"] = bytes(await self.client.read_gatt_char("2a00"))
-        except Exception as exc:
-            LOG.debug("Could not read BLE device name: %s", exc)
-
+        LOG.info("Initializing BLE input notifications")
         await self.client.write_gatt_char(BLE_INIT_WRITE, b"\x01\x00", response=True)
         await self.client.start_notify(BLE_COMMAND_RESPONSE, self._on_command_response)
-
-        await self.read_spi_memory(0x13000, 0x40)
-        await self.play_vibration_sample(0x03)
-        await self.set_player_leds(DEFAULT_LED_PATTERN)
         await self.configure_features(0xFF)
-
-        await self.read_spi_memory(0x13080, 0x40)
-        await self.read_spi_memory(0x130C0, 0x40)
-        await self.read_spi_memory(0x1FC040, 0x40)
-        await self.read_spi_memory(0x13040, 0x10)
-        await self.read_spi_memory(0x13100, 0x18)
-        await self.read_spi_memory(0x1FA000, 0x40)
         await self.enable_features(self.feature_flags)
-        await self.get_version_info()
 
         try:
             await self.client.write_gatt_descriptor(BLE_INPUT_COMMON_REPORT_RATE, b"\x85\x00")
@@ -380,6 +420,65 @@ class BLEController:
         await self._try_windows_throughput_params()
         await self.client.start_notify(BLE_INPUT_COMMON, self._on_input_report)
         LOG.info("BLE input notifications are active")
+
+    async def prepare_command_channel(self) -> None:
+        if self.client is None:
+            raise RuntimeError("BLE client is not connected")
+        await self.client.write_gatt_char(BLE_INIT_WRITE, b"\x01\x00", response=True)
+        await self.client.start_notify(BLE_COMMAND_RESPONSE, self._on_command_response)
+
+    async def pair_host(self, host_address: bytes) -> None:
+        if self.client is None:
+            raise RuntimeError("BLE client is not connected")
+
+        secondary = bytearray(host_address)
+        secondary[-1] = (secondary[-1] - 1) & 0xFF
+        address_payload = b"\x00\x02" + host_address[::-1] + bytes(secondary)[::-1]
+        LOG.info(
+            "Pairing controller to host addresses %s and %s",
+            format_bluetooth_address(host_address),
+            format_bluetooth_address(bytes(secondary)),
+        )
+        payload = controller_response_payload(
+            await self.send_command(controller_command(0x15, 0x01, address_payload)),
+            0x15,
+            0x01,
+        )
+        if len(payload) < 9 or payload[0] != 0x01:
+            raise RuntimeError(f"address exchange failed: {payload.hex()}")
+        LOG.info("Controller BLE address %s", format_bluetooth_address(payload[3:9][::-1]))
+
+        host_key = secrets.token_bytes(16)
+        payload = controller_response_payload(
+            await self.send_command(controller_command(0x15, 0x04, b"\x00" + host_key)),
+            0x15,
+            0x04,
+        )
+        if len(payload) < 17 or payload[0] != 0x01:
+            raise RuntimeError(f"key exchange failed: {payload.hex()}")
+        device_key = payload[1:17]
+        ltk = bytes(a ^ b for a, b in zip(host_key, device_key))
+
+        challenge = secrets.token_bytes(16)
+        payload = controller_response_payload(
+            await self.send_command(controller_command(0x15, 0x02, b"\x00" + challenge)),
+            0x15,
+            0x02,
+        )
+        if len(payload) < 17 or payload[0] != 0x01:
+            raise RuntimeError(f"LTK confirmation failed: {payload.hex()}")
+        expected = AES.new(ltk[::-1], AES.MODE_ECB).encrypt(challenge[::-1])
+        if payload[1:17] != expected:
+            raise RuntimeError("controller LTK confirmation response did not match")
+
+        payload = controller_response_payload(
+            await self.send_command(controller_command(0x15, 0x03, b"\x00")),
+            0x15,
+            0x03,
+        )
+        if not payload or payload[0] != 0x01:
+            raise RuntimeError(f"pairing finalise failed: {payload.hex()}")
+        LOG.info("Pairing finalised; controller should remember this host for reconnect/wake")
 
     async def disconnect(self) -> None:
         if self.client and self.client.is_connected:
@@ -410,58 +509,11 @@ class BLEController:
             LOG.warning("Command timeout: %s", command.hex())
         return self.command_response
 
-    async def read_spi_memory(self, address: int, size: int) -> bytes:
-        command = bytes(
-            [
-                0x02,
-                0x91,
-                0x01,
-                0x04,
-                0x00,
-                0x08,
-                0x00,
-                0x00,
-                size,
-                0x7E,
-                0x00,
-                0x00,
-                address & 0xFF,
-                (address >> 8) & 0xFF,
-                (address >> 16) & 0xFF,
-                (address >> 24) & 0xFF,
-            ]
-        )
-        response = await self.send_command(command)
-        self._parse_spi_response(address, response)
-        if len(response) < 16:
-            return b""
-        data_len = response[8]
-        return response[0x10 : 0x10 + data_len]
-
-    async def play_vibration_sample(self, index: int) -> None:
-        await self.send_command(bytes([0x0A, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, index, 0, 0, 0]))
-
-    async def set_player_leds(self, led_mask: int) -> None:
-        await self.send_command(
-            bytes([0x09, 0x91, 0x01, 0x07, 0x00, 0x08, 0x00, 0x00, led_mask, 0, 0, 0, 0, 0, 0, 0])
-        )
-
     async def configure_features(self, flags: int) -> None:
-        await self.send_command(bytes([0x0C, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, flags, 0, 0, 0]))
+        await self.send_command(controller_command(0x0C, 0x02, bytes([flags, 0, 0, 0])))
 
     async def enable_features(self, flags: int) -> None:
-        await self.send_command(bytes([0x0C, 0x91, 0x01, 0x04, 0x00, 0x04, 0x00, 0x00, flags, 0, 0, 0]))
-
-    async def get_version_info(self) -> None:
-        response = await self.send_command(bytes([0x10, 0x91, 0x01, 0x01, 0, 0, 0, 0]))
-        if len(response) < 20:
-            return
-        data = response[8:20]
-        prefixes = ["OJL", "OJR", "OFK", "LG"]
-        if data[3] < len(prefixes):
-            version = f"{prefixes[data[3]]}.{data[0]:02d}.{data[1]:02d}.{data[2]:02d}"
-            self.device_info["firmware_version"] = version
-            LOG.info("Controller firmware %s", version)
+        await self.send_command(controller_command(0x0C, 0x04, bytes([flags, 0, 0, 0])))
 
     def _on_command_response(self, _sender, data: bytearray) -> None:
         self.command_response = bytes(data)
@@ -471,21 +523,6 @@ class BLEController:
         parsed = parse_common_report(data)
         if parsed is not None:
             self.latest_input = parsed
-
-    def _parse_spi_response(self, address: int, response: bytes) -> None:
-        if len(response) < 16:
-            return
-        data_len = response[8]
-        data = response[0x10 : 0x10 + data_len]
-        if address == 0x13000 and len(data) >= 0x16:
-            serial = data[0x02:0x12].rstrip(b"\0")
-            vid = struct.unpack("<H", data[0x12:0x14])[0]
-            pid = struct.unpack("<H", data[0x14:0x16])[0]
-            self.device_info.update(serial=serial, vendor_id=vid, product_id=pid)
-            LOG.info("Controller SPI identity VID=%04X PID=%04X serial=%s", vid, pid, serial.decode(errors="replace"))
-        elif address == 0x1FA000 and len(data) >= 0x3A:
-            self.device_info["host_address1"] = data[0x08:0x0E]
-            self.device_info["ltk"] = data[0x1A:0x2A][::-1]
 
     async def _try_windows_throughput_params(self) -> None:
         if platform.system() != "Windows" or self.client is None:
@@ -507,10 +544,42 @@ class BLEController:
             LOG.debug("Could not request Windows BLE throughput parameters: %s", exc)
 
 
+def load_cached_address(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except Exception as exc:
+        LOG.debug("Could not read BLE cache %s: %s", path, exc)
+        return ""
+    return str(data.get("address", "")).strip()
+
+
+def save_cached_address(path: Path, address: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"address": address}, indent=2), encoding="utf-8")
+        LOG.info("Remembered BLE controller address in %s", path)
+    except Exception as exc:
+        LOG.debug("Could not write BLE cache %s: %s", path, exc)
+
+
+def forget_cached_address(path: Path) -> None:
+    try:
+        path.unlink()
+        LOG.info("Removed BLE controller cache %s", path)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        LOG.debug("Could not remove BLE cache %s: %s", path, exc)
+
+
 class Bridge:
-    def __init__(self, api_addr: str, feature_flags: int):
+    def __init__(self, api_addr: str, feature_flags: int, device_address: str, cache_file: Path):
         self.addr = parse_addr(api_addr)
         self.controller = BLEController(feature_flags)
+        self.device_address = device_address.strip()
+        self.cache_file = cache_file
         self.bus_id = 0
         self.dev_id = ""
         self.created_bus = False
@@ -555,8 +624,12 @@ class Bridge:
     async def ble_reconnect_loop(self) -> None:
         while self.running:
             try:
-                device = await self.controller.scan()
+                device = await self.find_controller()
                 await self.controller.connect(device)
+                address = getattr(device, "address", device)
+                if address:
+                    self.device_address = str(address)
+                    save_cached_address(self.cache_file, self.device_address)
                 await self.controller.initialize()
                 while self.running and self.controller.is_connected:
                     await asyncio.sleep(0.5)
@@ -564,11 +637,28 @@ class Bridge:
                 raise
             except Exception as exc:
                 LOG.error("BLE connection/init failed: %s", exc)
+                if self.device_address:
+                    LOG.info("Falling back to BLE scan on next retry")
+                    self.device_address = ""
+                    forget_cached_address(self.cache_file)
             finally:
                 await self.controller.disconnect()
             if self.running:
                 LOG.info("Resuming idle USB input and retrying BLE in 3 seconds")
                 await asyncio.sleep(3.0)
+
+    async def find_controller(self):
+        if self.device_address:
+            LOG.info("Trying remembered BLE controller %s", self.device_address)
+            return self.device_address
+
+        cached = load_cached_address(self.cache_file)
+        if cached:
+            self.device_address = cached
+            LOG.info("Trying cached BLE controller %s", cached)
+            return cached
+
+        return await self.controller.scan()
 
     async def input_loop(self) -> None:
         idle = NS2ProInput()
@@ -647,6 +737,18 @@ class Bridge:
 
 
 def run_self_test() -> None:
+    assert parse_bluetooth_address("48:F1:EB:3A:EB:81") == bytes.fromhex("48f1eb3aeb81")
+    assert controller_command(0x15, 0x03, b"\x00") == bytes.fromhex("159101030001000000")
+
+    host_key = bytes.fromhex("3503e92982877124bea80c664615834b")
+    device_key = bytes.fromhex("5cf6ee792cdf05e1ba2b6325c41a5f10")
+    challenge = bytes.fromhex("6fc6df8ad8fedf15bb8c15e91f320544")
+    ltk = bytes(a ^ b for a, b in zip(host_key, device_key))
+    assert ltk == bytes.fromhex("69f50750ae5874c504836f43820fdc5b")
+    assert AES.new(ltk[::-1], AES.MODE_ECB).encrypt(challenge[::-1]) == bytes.fromhex(
+        "134c97f511b9b6dd4d86fd40f536e9ed"
+    )
+
     packed = pack_input_state(NS2ProInput(buttons=BTN_A, lx=1, ly=2, rx=0x0FFE, ry=0x0FFF, accel_x=-1))
     assert len(packed) == INPUT_WIRE_SIZE
     assert struct.unpack_from("<I", packed, 0)[0] == BTN_A
@@ -704,14 +806,49 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=f"0x{DEFAULT_FEATURE_FLAGS:02x}",
         help="BLE feature flags to enable after init, default 0x07 (buttons, sticks, IMU)",
     )
+    parser.add_argument("--device-address", default="", help="BLE address to connect directly before scanning")
+    parser.add_argument(
+        "--host-address",
+        default="",
+        help="Host Bluetooth adapter address for --pair-host; auto-detected on Windows when omitted",
+    )
+    parser.add_argument(
+        "--cache-file",
+        type=Path,
+        default=DEFAULT_CACHE_FILE,
+        help=f"Remembered BLE address cache, default {DEFAULT_CACHE_FILE}",
+    )
+    parser.add_argument("--pair-host", action="store_true", help="Pair controller to this host for reconnect/wake")
+    parser.add_argument("--forget-device", action="store_true", help="Delete the remembered BLE address and exit")
     parser.add_argument("--self-test", action="store_true", help="Run parser/packer checks and exit")
     return parser
 
 
 async def async_main(args: argparse.Namespace) -> None:
     feature_flags = int(str(args.feature_flags), 0) & 0xFF
-    bridge = Bridge(args.api_addr, feature_flags)
+    bridge = Bridge(args.api_addr, feature_flags, args.device_address, args.cache_file)
     await bridge.run()
+
+
+async def pair_host_main(args: argparse.Namespace) -> None:
+    host_address_text = args.host_address or detect_windows_bluetooth_address()
+    if not host_address_text:
+        raise RuntimeError("could not detect host Bluetooth address; pass --host-address")
+    host_address = parse_bluetooth_address(host_address_text)
+
+    controller = BLEController(0)
+    device = args.device_address or load_cached_address(args.cache_file)
+    if not device:
+        device = await controller.scan()
+    try:
+        await controller.connect(device)
+        address = getattr(device, "address", device)
+        if address:
+            save_cached_address(args.cache_file, str(address))
+        await controller.prepare_command_channel()
+        await controller.pair_host(host_address)
+    finally:
+        await controller.disconnect()
 
 
 def main() -> None:
@@ -725,8 +862,14 @@ def main() -> None:
     if args.self_test:
         run_self_test()
         return
+    if args.forget_device:
+        forget_cached_address(args.cache_file)
+        return
     try:
-        asyncio.run(async_main(args))
+        if args.pair_host:
+            asyncio.run(pair_host_main(args))
+        else:
+            asyncio.run(async_main(args))
     except KeyboardInterrupt:
         LOG.info("Interrupted")
 

@@ -95,15 +95,15 @@ func TestDescriptor(t *testing.T) {
 	assert.Equal(t, DefaultSerial, desc.Strings[3])
 	assert.Equal(t, "Nintendo Switch 2 Pro Controller", desc.Strings[4])
 	assert.Equal(t, "Nintendo Switch 2 Pro Controller", desc.Strings[5])
-	assert.Equal(t, "Vendor Interface", desc.Strings[6])
+	assert.Equal(t, "Pro Controller", desc.Strings[6])
 	assert.Equal(t, byte(0x04), desc.Configuration.IConfiguration)
 	assert.Equal(t, byte(0xC0), desc.Configuration.BMAttributes)
 	assert.Equal(t, byte(0xFA), desc.Configuration.BMaxPower)
 	require.NotNil(t, desc.MicrosoftOS10)
 	assert.Equal(t, byte(microsoftOS10VendorCode), desc.MicrosoftOS10.VendorCode)
-	assert.Equal(t, uint8(5), desc.NumInterfaces())
-	require.Len(t, desc.Associations, 3)
-	require.Len(t, desc.Interfaces, 7)
+	assert.Equal(t, uint8(2), desc.NumInterfaces())
+	require.Empty(t, desc.Associations)
+	require.Len(t, desc.Interfaces, 2)
 
 	hidIface := desc.Interfaces[0]
 	assert.Equal(t, byte(0x03), hidIface.Descriptor.BInterfaceClass)
@@ -120,24 +120,6 @@ func TestDescriptor(t *testing.T) {
 	require.Len(t, bulkIface.Endpoints, 2)
 	assert.Equal(t, byte(EndpointBulkOut), bulkIface.Endpoints[0].BEndpointAddress)
 	assert.Equal(t, byte(EndpointBulkIn), bulkIface.Endpoints[1].BEndpointAddress)
-
-	audioControlIface := desc.Interfaces[2]
-	assert.Equal(t, byte(0x02), audioControlIface.Descriptor.BInterfaceNumber)
-	assert.Equal(t, byte(0x01), audioControlIface.Descriptor.BInterfaceClass)
-	assert.Equal(t, byte(0x01), audioControlIface.Descriptor.BInterfaceSubClass)
-	require.Len(t, audioControlIface.ClassDescriptors, 7)
-
-	audioOutStreaming := desc.Interfaces[4]
-	assert.Equal(t, byte(0x03), audioOutStreaming.Descriptor.BInterfaceNumber)
-	assert.Equal(t, byte(0x01), audioOutStreaming.Descriptor.BAlternateSetting)
-	require.Len(t, audioOutStreaming.Endpoints, 1)
-	assert.Equal(t, byte(0x03), audioOutStreaming.Endpoints[0].BEndpointAddress)
-
-	audioInStreaming := desc.Interfaces[6]
-	assert.Equal(t, byte(0x04), audioInStreaming.Descriptor.BInterfaceNumber)
-	assert.Equal(t, byte(0x01), audioInStreaming.Descriptor.BAlternateSetting)
-	require.Len(t, audioInStreaming.Endpoints, 1)
-	assert.Equal(t, byte(0x83), audioInStreaming.Endpoints[0].BEndpointAddress)
 }
 
 func TestBuildReport09(t *testing.T) {
@@ -362,10 +344,10 @@ func TestStreamInputAndRumble(t *testing.T) {
 
 	config, err := controlIn(imp.Conn, controlSetup(0x80, 0x06, 0x0200, 0, 512))
 	require.NoError(t, err)
-	require.Len(t, config, 0x010C)
-	assert.Equal(t, []byte{0x09, 0x02, 0x0C, 0x01, 0x05, 0x01, 0x04, 0xC0, 0xFA}, config[:9])
-	assert.Equal(t, []byte{0x08, 0x0B, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00}, config[9:17])
-	assert.Equal(t, []byte{0x08, 0x0B, 0x02, 0x03, 0x01, 0x01, 0x00, 0x00}, config[80:88])
+	require.Len(t, config, 64)
+	assert.Equal(t, []byte{0x09, 0x02, 0x40, 0x00, 0x02, 0x01, 0x04, 0xC0, 0xFA}, config[:9])
+	assert.Equal(t, []byte{0x09, 0x04, 0x00, 0x00, 0x02, 0x03, 0x00, 0x00, 0x05}, config[9:18])
+	assert.Equal(t, []byte{0x09, 0x04, 0x01, 0x00, 0x02, 0xFF, 0x00, 0x00, 0x06}, config[41:50])
 
 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirOut, 2, selectReportCommand(ReportIDPro), nil))
 

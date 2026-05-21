@@ -440,32 +440,6 @@ func MakeDescriptor() usb.Descriptor {
 		MicrosoftOS10: &usb.MicrosoftOS10Descriptor{
 			VendorCode: microsoftOS10VendorCode,
 		},
-		Associations: []usb.InterfaceAssociationDescriptor{
-			{
-				BFirstInterface:   0x00,
-				BInterfaceCount:   0x01,
-				BFunctionClass:    0x03,
-				BFunctionSubClass: 0x00,
-				BFunctionProtocol: 0x00,
-				IFunction:         0x00,
-			},
-			{
-				BFirstInterface:   0x01,
-				BInterfaceCount:   0x01,
-				BFunctionClass:    0xFF,
-				BFunctionSubClass: 0x00,
-				BFunctionProtocol: 0x00,
-				IFunction:         0x00,
-			},
-			{
-				BFirstInterface:   0x02,
-				BInterfaceCount:   0x03,
-				BFunctionClass:    0x01,
-				BFunctionSubClass: 0x01,
-				BFunctionProtocol: 0x00,
-				IFunction:         0x00,
-			},
-		},
 		Interfaces: []usb.InterfaceConfig{
 			{
 				Descriptor: usb.InterfaceDescriptor{
@@ -507,100 +481,6 @@ func MakeDescriptor() usb.Descriptor {
 					{BEndpointAddress: EndpointBulkIn, BMAttributes: 0x02, WMaxPacketSize: 64, BInterval: 0},
 				},
 			},
-			{
-				Descriptor: usb.InterfaceDescriptor{
-					BInterfaceNumber:   0x02,
-					BAlternateSetting:  0x00,
-					BNumEndpoints:      0x00,
-					BInterfaceClass:    0x01,
-					BInterfaceSubClass: 0x01,
-					BInterfaceProtocol: 0x00,
-					IInterface:         0x00,
-				},
-				ClassDescriptors: []usb.ClassSpecificDescriptor{
-					{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x00, 0x01, 0x47, 0x00, 0x02, 0x03, 0x04}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x06, 0x02, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x03, 0x03, 0x02, 0x03, 0x00, 0x02, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x04, 0x01, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x06, 0x05, 0x04, 0x01, 0x03, 0x00, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x03, 0x06, 0x01, 0x01, 0x00, 0x05, 0x00}},
-				},
-			},
-			{
-				Descriptor: usb.InterfaceDescriptor{
-					BInterfaceNumber:   0x03,
-					BAlternateSetting:  0x00,
-					BNumEndpoints:      0x00,
-					BInterfaceClass:    0x01,
-					BInterfaceSubClass: 0x02,
-					BInterfaceProtocol: 0x00,
-					IInterface:         0x00,
-				},
-			},
-			{
-				Descriptor: usb.InterfaceDescriptor{
-					BInterfaceNumber:   0x03,
-					BAlternateSetting:  0x01,
-					BNumEndpoints:      0x01,
-					BInterfaceClass:    0x01,
-					BInterfaceSubClass: 0x02,
-					BInterfaceProtocol: 0x00,
-					IInterface:         0x00,
-				},
-				ClassDescriptors: []usb.ClassSpecificDescriptor{
-					{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x01, 0x00, 0x01, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x02, 0x02, 0x10, 0x01, 0x80, 0xBB, 0x00}},
-				},
-				Endpoints: []usb.EndpointDescriptor{
-					{
-						BEndpointAddress: 0x03,
-						BMAttributes:     0x0D,
-						WMaxPacketSize:   0x00C0,
-						BInterval:        0x01,
-						ClassDescriptors: []usb.ClassSpecificDescriptor{
-							{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}},
-						},
-					},
-				},
-			},
-			{
-				Descriptor: usb.InterfaceDescriptor{
-					BInterfaceNumber:   0x04,
-					BAlternateSetting:  0x00,
-					BNumEndpoints:      0x00,
-					BInterfaceClass:    0x01,
-					BInterfaceSubClass: 0x02,
-					BInterfaceProtocol: 0x00,
-					IInterface:         0x00,
-				},
-			},
-			{
-				Descriptor: usb.InterfaceDescriptor{
-					BInterfaceNumber:   0x04,
-					BAlternateSetting:  0x01,
-					BNumEndpoints:      0x01,
-					BInterfaceClass:    0x01,
-					BInterfaceSubClass: 0x02,
-					BInterfaceProtocol: 0x00,
-					IInterface:         0x00,
-				},
-				ClassDescriptors: []usb.ClassSpecificDescriptor{
-					{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x06, 0x00, 0x01, 0x00}},
-					{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x02, 0x02, 0x10, 0x01, 0x80, 0xBB, 0x00}},
-				},
-				Endpoints: []usb.EndpointDescriptor{
-					{
-						BEndpointAddress: 0x83,
-						BMAttributes:     0x0D,
-						WMaxPacketSize:   0x00C0,
-						BInterval:        0x01,
-						ClassDescriptors: []usb.ClassSpecificDescriptor{
-							{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}},
-						},
-					},
-				},
-			},
 		},
 		Strings: map[uint8]string{
 			0: "\u0409",
@@ -609,7 +489,7 @@ func MakeDescriptor() usb.Descriptor {
 			3: DefaultSerial,
 			4: "Nintendo Switch 2 Pro Controller",
 			5: "Nintendo Switch 2 Pro Controller",
-			6: "Vendor Interface",
+			6: "Pro Controller",
 		},
 	}
 }
