@@ -15,6 +15,7 @@ const (
 	ConfigDescType    = 0x02
 	InterfaceDescType = 0x04
 	EndpointDescType  = 0x05
+	IADDescType       = 0x0B
 	HIDDescType       = 0x21
 	ReportDescType    = 0x22
 )
@@ -23,6 +24,7 @@ const (
 const (
 	DeviceDescLen    = 18
 	ConfigDescLen    = 9
+	IADDescLen       = 8
 	InterfaceDescLen = 9
 	EndpointDescLen  = 7
 	HIDDescLen       = 9
@@ -32,9 +34,67 @@ type Data []uint8
 
 // Descriptor holds all static descriptor/config data for a device.
 type Descriptor struct {
-	Device     DeviceDescriptor
-	Interfaces []InterfaceConfig
-	Strings    map[uint8]string
+	Device        DeviceDescriptor
+	Configuration ConfigurationDescriptor
+	MicrosoftOS10 *MicrosoftOS10Descriptor
+	Associations  []InterfaceAssociationDescriptor
+	Interfaces    []InterfaceConfig
+	Strings       map[uint8]string
+}
+
+// MicrosoftOS10Descriptor enables the Microsoft OS 1.0 descriptor probe used by
+// Windows to bind vendor-specific interfaces to inbox drivers such as WinUSB.
+type MicrosoftOS10Descriptor struct {
+	VendorCode uint8
+}
+
+func (d MicrosoftOS10Descriptor) StringDescriptor() []byte {
+	vendorCode := d.VendorCode
+	if vendorCode == 0 {
+		vendorCode = 0x20
+	}
+	return []byte{
+		0x12, 0x03,
+		'M', 0x00,
+		'S', 0x00,
+		'F', 0x00,
+		'T', 0x00,
+		'1', 0x00,
+		'0', 0x00,
+		'0', 0x00,
+		vendorCode, 0x00,
+	}
+}
+
+// NumInterfaces returns the number of distinct interface numbers in the active
+// configuration. Alternate settings share the same interface number and only
+// count once in the USB configuration descriptor header.
+func (d Descriptor) NumInterfaces() uint8 {
+	seen := map[uint8]struct{}{}
+	for _, iface := range d.Interfaces {
+		seen[iface.Descriptor.BInterfaceNumber] = struct{}{}
+	}
+	return uint8(len(seen))
+}
+
+// Interface returns the first matching interface descriptor for an interface
+// number, preferring alternate setting zero when available.
+func (d Descriptor) Interface(number uint8) (InterfaceConfig, bool) {
+	var found InterfaceConfig
+	ok := false
+	for _, iface := range d.Interfaces {
+		if iface.Descriptor.BInterfaceNumber != number {
+			continue
+		}
+		if iface.Descriptor.BAlternateSetting == 0 {
+			return iface, true
+		}
+		if !ok {
+			found = iface
+			ok = true
+		}
+	}
+	return found, ok
 }
 
 // InterfaceConfig holds all descriptors for a single interface for bus management.
@@ -122,6 +182,37 @@ type ConfigHeader struct {
 	BMaxPower           uint8
 }
 
+// ConfigurationDescriptor contains the non-derived fields from the USB
+// configuration descriptor. Zero values keep the server defaults.
+type ConfigurationDescriptor struct {
+	BConfigurationValue uint8
+	IConfiguration      uint8
+	BMAttributes        uint8
+	BMaxPower           uint8
+}
+
+// InterfaceAssociationDescriptor describes a USB Interface Association
+// Descriptor (IAD), used by composite devices to group related interfaces.
+type InterfaceAssociationDescriptor struct {
+	BFirstInterface   uint8
+	BInterfaceCount   uint8
+	BFunctionClass    uint8
+	BFunctionSubClass uint8
+	BFunctionProtocol uint8
+	IFunction         uint8
+}
+
+func (i InterfaceAssociationDescriptor) Write(b *bytes.Buffer) {
+	b.WriteByte(IADDescLen)
+	b.WriteByte(IADDescType)
+	b.WriteByte(i.BFirstInterface)
+	b.WriteByte(i.BInterfaceCount)
+	b.WriteByte(i.BFunctionClass)
+	b.WriteByte(i.BFunctionSubClass)
+	b.WriteByte(i.BFunctionProtocol)
+	b.WriteByte(i.IFunction)
+}
+
 func (h ConfigHeader) Write(b *bytes.Buffer) {
 	b.WriteByte(ConfigDescLen)
 	b.WriteByte(ConfigDescType)
@@ -164,6 +255,10 @@ type EndpointDescriptor struct {
 	BMAttributes     uint8
 	WMaxPacketSize   uint16 // LE
 	BInterval        uint8
+
+	// ClassDescriptors are optional endpoint-level class-specific descriptors
+	// emitted immediately after this endpoint descriptor.
+	ClassDescriptors []ClassSpecificDescriptor
 }
 
 func (e EndpointDescriptor) Write(b *bytes.Buffer) {
