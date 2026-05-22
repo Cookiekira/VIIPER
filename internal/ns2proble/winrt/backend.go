@@ -101,7 +101,12 @@ func (b *Backend) Connect(ctx context.Context, device ns2proble.Device) (ns2prob
 		return nil, err
 	}
 	bt := (*bluetooth.BluetoothLEDevice)(ptr)
-	p := &peripheral{device: bt, chars: map[string]*gatt.GattCharacteristic{}}
+	request, _ := requestThroughputOptimized(bt)
+	p := &peripheral{
+		device:            bt,
+		connectionRequest: request,
+		chars:             map[string]*gatt.GattCharacteristic{},
+	}
 	if err := p.discover(ctx); err != nil {
 		_ = p.Close()
 		return nil, err
@@ -117,8 +122,9 @@ func (b *Backend) init() error {
 }
 
 type peripheral struct {
-	device *bluetooth.BluetoothLEDevice
-	chars  map[string]*gatt.GattCharacteristic
+	device            *bluetooth.BluetoothLEDevice
+	connectionRequest *bluetooth.BluetoothLEPreferredConnectionParametersRequest
+	chars             map[string]*gatt.GattCharacteristic
 
 	mu     sync.Mutex
 	tokens []subscription
@@ -220,6 +226,10 @@ func (p *peripheral) Close() error {
 		_ = sub.char.RemoveValueChanged(sub.token)
 	}
 	p.tokens = nil
+	if p.connectionRequest != nil {
+		_ = p.connectionRequest.Close()
+		p.connectionRequest = nil
+	}
 	if p.device != nil {
 		return p.device.Close()
 	}
@@ -353,4 +363,25 @@ func bytesFromBuffer(buf *streams.IBuffer) ([]byte, error) {
 		return nil, err
 	}
 	return reader.ReadBytes(n)
+}
+
+func requestThroughputOptimized(device *bluetooth.BluetoothLEDevice) (*bluetooth.BluetoothLEPreferredConnectionParametersRequest, error) {
+	params, err := bluetooth.BluetoothLEPreferredConnectionParametersGetThroughputOptimized()
+	if err != nil {
+		return nil, err
+	}
+	request, err := device.RequestPreferredConnectionParameters(params)
+	if err != nil {
+		return nil, err
+	}
+	status, err := request.GetStatus()
+	if err != nil {
+		_ = request.Close()
+		return nil, err
+	}
+	if status != bluetooth.BluetoothLEPreferredConnectionParametersRequestStatusSuccess {
+		_ = request.Close()
+		return nil, fmt.Errorf("throughput optimized connection request status: %v", status)
+	}
+	return request, nil
 }
