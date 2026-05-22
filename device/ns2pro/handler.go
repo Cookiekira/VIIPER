@@ -17,36 +17,46 @@ func init() {
 
 type handler struct{}
 
-func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) { return New(o) }
+func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
+	return New(o)
+}
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
 		if devPtr == nil || *devPtr == nil {
 			return fmt.Errorf("nil device")
 		}
-		dev, ok := (*devPtr).(*NS2Pro)
+		ns2, ok := (*devPtr).(*NS2Pro)
 		if !ok {
 			return fmt.Errorf("device is not ns2pro")
 		}
 
-		dev.SetHIDOutputCallback(func(report []byte) {
-			if _, err := conn.Write(report); err != nil {
-				logger.Error("failed to send ns2pro HID output report", "error", err)
+		ns2.SetOutputCallback(func(feedback OutputState) {
+			data, err := feedback.MarshalBinary()
+			if err != nil {
+				logger.Error("failed to marshal ns2pro feedback", "error", err)
+				return
+			}
+			if _, err := conn.Write(data); err != nil {
+				logger.Error("failed to send ns2pro feedback", "error", err)
 			}
 		})
 
-		buf := make([]byte, InputReportSize)
+		buf := make([]byte, InputWireSize)
 		for {
 			if _, err := io.ReadFull(conn, buf); err != nil {
-				if err == io.EOF || err == io.ErrUnexpectedEOF {
+				if err == io.EOF {
 					logger.Info("client disconnected")
 					return nil
 				}
-				return fmt.Errorf("read ns2pro input report: %w", err)
+				return fmt.Errorf("read input state: %w", err)
 			}
-			if !dev.UpdateInputReport(buf) {
-				return fmt.Errorf("invalid ns2pro input report: len=%d reportID=0x%02x", len(buf), buf[0])
+
+			var state InputState
+			if err := state.UnmarshalBinary(buf); err != nil {
+				return fmt.Errorf("unmarshal input state: %w", err)
 			}
+			ns2.UpdateInputState(state)
 		}
 	}
 }
