@@ -196,6 +196,9 @@ func RemoveNS2ProDevice(handle C.NS2ProDeviceHandle) bool {
 	if !ok {
 		return false
 	}
+	if dev, ok := dhw.device.(*ns2pro.NS2Pro); ok {
+		dev.SetOutputCallback(nil)
+	}
 	if err := dhw.usbServer.s.RemoveDeviceByID(dhw.exportMeta.BusId, fmt.Sprintf("%d", dhw.exportMeta.DevId)); err != nil {
 		return false
 	}

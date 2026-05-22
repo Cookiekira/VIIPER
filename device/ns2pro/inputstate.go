@@ -154,141 +154,77 @@ func (s InputState) buildProReport(counter uint8, features uint8) []byte {
 
 func (s InputState) commonButtonBytes() [4]byte {
 	var out [4]byte
-	if s.Buttons&ButtonY != 0 {
-		out[0] |= 0x01
-	}
-	if s.Buttons&ButtonX != 0 {
-		out[0] |= 0x02
-	}
-	if s.Buttons&ButtonB != 0 {
-		out[0] |= 0x04
-	}
-	if s.Buttons&ButtonA != 0 {
-		out[0] |= 0x08
-	}
-	if s.Buttons&ButtonR != 0 {
-		out[0] |= 0x40
-	}
-	if s.Buttons&ButtonZR != 0 {
-		out[0] |= 0x80
-	}
-	if s.Buttons&ButtonMinus != 0 {
-		out[1] |= 0x01
-	}
-	if s.Buttons&ButtonPlus != 0 {
-		out[1] |= 0x02
-	}
-	if s.Buttons&ButtonRightStick != 0 {
-		out[1] |= 0x04
-	}
-	if s.Buttons&ButtonLeftStick != 0 {
-		out[1] |= 0x08
-	}
-	if s.Buttons&ButtonHome != 0 {
-		out[1] |= 0x10
-	}
-	if s.Buttons&ButtonCapture != 0 {
-		out[1] |= 0x20
-	}
-	if s.Buttons&ButtonC != 0 {
-		out[1] |= 0x40
-	}
-	if s.Buttons&ButtonDown != 0 {
-		out[2] |= 0x01
-	}
-	if s.Buttons&ButtonUp != 0 {
-		out[2] |= 0x02
-	}
-	if s.Buttons&ButtonRight != 0 {
-		out[2] |= 0x04
-	}
-	if s.Buttons&ButtonLeft != 0 {
-		out[2] |= 0x08
-	}
-	if s.Buttons&ButtonL != 0 {
-		out[2] |= 0x40
-	}
-	if s.Buttons&ButtonZL != 0 {
-		out[2] |= 0x80
-	}
-	if s.Buttons&ButtonGR != 0 {
-		out[3] |= 0x01
-	}
-	if s.Buttons&ButtonGL != 0 {
-		out[3] |= 0x02
-	}
-	if s.Buttons&ButtonHeadset != 0 {
-		out[3] |= 0x10
-	}
+	encodeButtonMap(s.Buttons, commonButtonMap, out[:])
 	return out
 }
 
 func (s InputState) proButtonBytes() [3]byte {
 	var out [3]byte
-	if s.Buttons&ButtonB != 0 {
-		out[0] |= 0x01
-	}
-	if s.Buttons&ButtonA != 0 {
-		out[0] |= 0x02
-	}
-	if s.Buttons&ButtonY != 0 {
-		out[0] |= 0x04
-	}
-	if s.Buttons&ButtonX != 0 {
-		out[0] |= 0x08
-	}
-	if s.Buttons&ButtonR != 0 {
-		out[0] |= 0x10
-	}
-	if s.Buttons&ButtonZR != 0 {
-		out[0] |= 0x20
-	}
-	if s.Buttons&ButtonPlus != 0 {
-		out[0] |= 0x40
-	}
-	if s.Buttons&ButtonRightStick != 0 {
-		out[0] |= 0x80
-	}
-	if s.Buttons&ButtonDown != 0 {
-		out[1] |= 0x01
-	}
-	if s.Buttons&ButtonRight != 0 {
-		out[1] |= 0x02
-	}
-	if s.Buttons&ButtonLeft != 0 {
-		out[1] |= 0x04
-	}
-	if s.Buttons&ButtonUp != 0 {
-		out[1] |= 0x08
-	}
-	if s.Buttons&ButtonL != 0 {
-		out[1] |= 0x10
-	}
-	if s.Buttons&ButtonZL != 0 {
-		out[1] |= 0x20
-	}
-	if s.Buttons&ButtonMinus != 0 {
-		out[1] |= 0x40
-	}
-	if s.Buttons&ButtonLeftStick != 0 {
-		out[1] |= 0x80
-	}
-	if s.Buttons&ButtonHome != 0 {
-		out[2] |= 0x01
-	}
-	if s.Buttons&ButtonCapture != 0 {
-		out[2] |= 0x02
-	}
-	if s.Buttons&ButtonGR != 0 {
-		out[2] |= 0x04
-	}
-	if s.Buttons&ButtonGL != 0 {
-		out[2] |= 0x08
-	}
-	if s.Buttons&ButtonC != 0 {
-		out[2] |= 0x10
-	}
+	encodeButtonMap(s.Buttons, proButtonMap, out[:])
 	return out
+}
+
+type buttonReportBit struct {
+	button uint32
+	index  int
+	mask   byte
+}
+
+func encodeButtonMap(buttons uint32, mapping []buttonReportBit, out []byte) {
+	for _, bit := range mapping {
+		if buttons&bit.button != 0 {
+			out[bit.index] |= bit.mask
+		}
+	}
+}
+
+var commonButtonMap = []buttonReportBit{
+	{ButtonY, 0, 0x01},
+	{ButtonX, 0, 0x02},
+	{ButtonB, 0, 0x04},
+	{ButtonA, 0, 0x08},
+	{ButtonR, 0, 0x40},
+	{ButtonZR, 0, 0x80},
+	{ButtonMinus, 1, 0x01},
+	{ButtonPlus, 1, 0x02},
+	{ButtonRightStick, 1, 0x04},
+	{ButtonLeftStick, 1, 0x08},
+	{ButtonHome, 1, 0x10},
+	{ButtonCapture, 1, 0x20},
+	{ButtonC, 1, 0x40},
+	{ButtonDown, 2, 0x01},
+	{ButtonUp, 2, 0x02},
+	{ButtonRight, 2, 0x04},
+	{ButtonLeft, 2, 0x08},
+	{ButtonL, 2, 0x40},
+	{ButtonZL, 2, 0x80},
+	{ButtonGR, 3, 0x01},
+	{ButtonGL, 3, 0x02},
+	{ButtonHeadset, 3, 0x10},
+}
+
+var proButtonMap = []buttonReportBit{
+	{ButtonB, 0, 0x01},
+	{ButtonA, 0, 0x02},
+	{ButtonY, 0, 0x04},
+	{ButtonX, 0, 0x08},
+	{ButtonR, 0, 0x10},
+	{ButtonZR, 0, 0x20},
+	{ButtonPlus, 0, 0x40},
+	{ButtonRightStick, 0, 0x80},
+	{ButtonDown, 1, 0x01},
+	{ButtonRight, 1, 0x02},
+	{ButtonLeft, 1, 0x04},
+	{ButtonUp, 1, 0x08},
+	{ButtonL, 1, 0x10},
+	{ButtonZL, 1, 0x20},
+	{ButtonMinus, 1, 0x40},
+	{ButtonLeftStick, 1, 0x80},
+	{ButtonHome, 2, 0x01},
+	{ButtonCapture, 2, 0x02},
+	{ButtonGR, 2, 0x04},
+	{ButtonGL, 2, 0x08},
+	{ButtonC, 2, 0x10},
 }
 
 func packStick12(out []byte, x, y uint16) {

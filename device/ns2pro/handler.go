@@ -31,7 +31,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			return fmt.Errorf("device is not ns2pro")
 		}
 
-		ns2.SetOutputCallback(func(feedback OutputState) {
+		clearOutputCallback := ns2.SetOutputCallback(func(feedback OutputState) {
 			data, err := feedback.MarshalBinary()
 			if err != nil {
 				logger.Error("failed to marshal ns2pro feedback", "error", err)
@@ -41,6 +41,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 				logger.Error("failed to send ns2pro feedback", "error", err)
 			}
 		})
+		defer clearOutputCallback()
 
 		buf := make([]byte, InputWireSize)
 		for {

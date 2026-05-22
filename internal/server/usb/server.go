@@ -769,6 +769,18 @@ func (s *Server) processSubmit(dev usb.Device, ep uint32, dir uint32, setup []by
 		}
 		return data
 	}
+
+	if desc.MicrosoftOS10 != nil &&
+		breq == desc.MicrosoftOS10.EffectiveVendorCode() &&
+		(bm == 0xC0 || bm == 0xC1) {
+		if data, ok := desc.MicrosoftOS10.ControlResponse(wValue, wIndex); ok {
+			if int(wLength) < len(data) {
+				return data[:wLength]
+			}
+			return data
+		}
+	}
+
 	if breq == usbReqGetDescriptor && bm == usbReqTypeStandardToInterface {
 		dtype := uint8(wValue >> 8)
 		iface := uint8(wIndex & 0xff)

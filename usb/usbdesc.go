@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"unicode/utf16"
 
 	"github.com/Alia5/VIIPER/usb/hid"
 )
@@ -45,14 +46,14 @@ type Descriptor struct {
 // MicrosoftOS10Descriptor enables the Microsoft OS 1.0 descriptor probe used by
 // Windows to bind vendor-specific interfaces to inbox drivers such as WinUSB.
 type MicrosoftOS10Descriptor struct {
-	VendorCode uint8
+	VendorCode          uint8
+	InterfaceNumber     uint8
+	CompatibleID        string
+	SubCompatibleID     string
+	DeviceInterfaceGUID string
 }
 
 func (d MicrosoftOS10Descriptor) StringDescriptor() []byte {
-	vendorCode := d.VendorCode
-	if vendorCode == 0 {
-		vendorCode = 0x20
-	}
 	return []byte{
 		0x12, 0x03,
 		'M', 0x00,
@@ -62,8 +63,88 @@ func (d MicrosoftOS10Descriptor) StringDescriptor() []byte {
 		'1', 0x00,
 		'0', 0x00,
 		'0', 0x00,
-		vendorCode, 0x00,
+		d.EffectiveVendorCode(), 0x00,
 	}
+}
+
+func (d MicrosoftOS10Descriptor) EffectiveVendorCode() uint8 {
+	if d.VendorCode == 0 {
+		return 0x20
+	}
+	return d.VendorCode
+}
+
+func (d MicrosoftOS10Descriptor) ControlResponse(wValue, wIndex uint16) ([]byte, bool) {
+	switch {
+	case wIndex == 0x0004:
+		return d.CompatibleIDDescriptor(), true
+	case wIndex == 0x0005 || wValue == 0x0005:
+		return d.ExtendedPropertiesDescriptor(), true
+	default:
+		return nil, false
+	}
+}
+
+func (d MicrosoftOS10Descriptor) CompatibleIDDescriptor() []byte {
+	out := make([]byte, 40)
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+	binary.LittleEndian.PutUint16(out[4:6], 0x0100)
+	binary.LittleEndian.PutUint16(out[6:8], 0x0004)
+	out[8] = 0x01
+	out[16] = d.InterfaceNumber
+	copyFixedASCII(out[18:26], d.CompatibleID)
+	copyFixedASCII(out[26:34], d.SubCompatibleID)
+	return out
+}
+
+func (d MicrosoftOS10Descriptor) ExtendedPropertiesDescriptor() []byte {
+	if d.DeviceInterfaceGUID == "" {
+		out := make([]byte, 10)
+		binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+		binary.LittleEndian.PutUint16(out[4:6], 0x0100)
+		binary.LittleEndian.PutUint16(out[6:8], 0x0005)
+		return out
+	}
+
+	name := utf16leString("DeviceInterfaceGUID")
+	data := utf16leString(d.DeviceInterfaceGUID)
+
+	sectionLen := 4 + 4 + 2 + len(name) + 4 + len(data)
+	out := make([]byte, 10+sectionLen)
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+	binary.LittleEndian.PutUint16(out[4:6], 0x0100)
+	binary.LittleEndian.PutUint16(out[6:8], 0x0005)
+	binary.LittleEndian.PutUint16(out[8:10], 0x0001)
+
+	off := 10
+	binary.LittleEndian.PutUint32(out[off:off+4], uint32(sectionLen))
+	off += 4
+	binary.LittleEndian.PutUint32(out[off:off+4], 0x00000001) // REG_SZ
+	off += 4
+	binary.LittleEndian.PutUint16(out[off:off+2], uint16(len(name)))
+	off += 2
+	copy(out[off:off+len(name)], name)
+	off += len(name)
+	binary.LittleEndian.PutUint32(out[off:off+4], uint32(len(data)))
+	off += 4
+	copy(out[off:], data)
+	return out
+}
+
+func copyFixedASCII(dst []byte, s string) {
+	for i := range dst {
+		dst[i] = 0
+	}
+	copy(dst, []byte(s))
+}
+
+func utf16leString(s string) []byte {
+	units := utf16.Encode([]rune(s + "\x00"))
+	out := make([]byte, len(units)*2)
+	for i, u := range units {
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], u)
+	}
+	return out
 }
 
 // NumInterfaces returns the number of distinct interface numbers in the active

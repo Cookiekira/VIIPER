@@ -280,10 +280,10 @@ func TestPlayerLEDOutput(t *testing.T) {
 }
 
 func TestMicrosoftOS10WinUSBDescriptor(t *testing.T) {
-	dev, err := New(nil)
-	require.NoError(t, err)
+	desc := MakeDescriptor()
+	require.NotNil(t, desc.MicrosoftOS10)
 
-	resp, handled := dev.HandleControl(0xC0, microsoftOS10VendorCode, 0, 0x0004, 40, nil)
+	resp, handled := desc.MicrosoftOS10.ControlResponse(0, 0x0004)
 	require.True(t, handled)
 	require.Len(t, resp, 40)
 	assert.Equal(t, uint32(40), binary.LittleEndian.Uint32(resp[0:4]))
@@ -295,10 +295,10 @@ func TestMicrosoftOS10WinUSBDescriptor(t *testing.T) {
 }
 
 func TestMicrosoftOS10ExtendedPropertiesDescriptor(t *testing.T) {
-	dev, err := New(nil)
-	require.NoError(t, err)
+	desc := MakeDescriptor()
+	require.NotNil(t, desc.MicrosoftOS10)
 
-	resp, handled := dev.HandleControl(0xC1, microsoftOS10VendorCode, 0, 0x0005, 0x008E, nil)
+	resp, handled := desc.MicrosoftOS10.ControlResponse(0, 0x0005)
 	require.True(t, handled)
 	require.Len(t, resp, 142)
 	assert.Equal(t, uint32(142), binary.LittleEndian.Uint32(resp[0:4]))
