@@ -75,16 +75,20 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-// viiper:wire ns2pro s2c leftRumble:u8*16 rightRumble:u8*16
+// viiper:wire ns2pro s2c leftRumble:u8*16 rightRumble:u8*16 flags:u8 playerLedMask:u8
 type OutputState struct {
-	LeftRumble  [16]byte
-	RightRumble [16]byte
+	LeftRumble    [16]byte
+	RightRumble   [16]byte
+	Flags         uint8
+	PlayerLedMask uint8
 }
 
 func (o *OutputState) MarshalBinary() ([]byte, error) {
 	b := make([]byte, OutputWireSize)
 	copy(b[0:16], o.LeftRumble[:])
 	copy(b[16:32], o.RightRumble[:])
+	b[32] = o.Flags
+	b[33] = o.PlayerLedMask
 	return b, nil
 }
 
@@ -94,6 +98,8 @@ func (o *OutputState) UnmarshalBinary(data []byte) error {
 	}
 	copy(o.LeftRumble[:], data[0:16])
 	copy(o.RightRumble[:], data[16:32])
+	o.Flags = data[32]
+	o.PlayerLedMask = data[33]
 	return nil
 }
 

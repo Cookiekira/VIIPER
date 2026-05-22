@@ -231,19 +231,18 @@ func (d *NS2Pro) handleOutputReport(out []byte) {
 	payload := out
 	if out[0] == ReportIDOutput {
 		payload = out[1:]
-	} else if len(out) != OutputWireSize {
+	} else if len(out) != OutputRumbleSize {
 		return
 	}
-	if len(payload) < OutputWireSize {
+	if len(payload) < OutputRumbleSize {
 		return
 	}
 
 	feedback := OutputState{}
 	copy(feedback.LeftRumble[:], payload[0:16])
 	copy(feedback.RightRumble[:], payload[16:32])
-	if d.outputFunc != nil {
-		d.outputFunc(feedback)
-	}
+	feedback.Flags = OutputFlagRumble
+	d.emitOutput(feedback)
 }
 
 func (d *NS2Pro) handleBulkOut(out []byte) {
@@ -262,10 +261,26 @@ func (d *NS2Pro) handleBulkOut(out []byte) {
 	case 0x0C:
 		d.handleFeatureCommand(seq, sub, out)
 	case 0x09:
-		d.enqueueResponse(commandHeader(cmd, seq, sub))
+		d.handlePlayerLEDCommand(seq, sub, out)
 	default:
 		d.enqueueResponse(commandHeader(cmd, seq, sub))
 	}
+}
+
+func (d *NS2Pro) emitOutput(feedback OutputState) {
+	if d.outputFunc != nil {
+		d.outputFunc(feedback)
+	}
+}
+
+func (d *NS2Pro) handlePlayerLEDCommand(seq, sub uint8, out []byte) {
+	if sub == 0x07 && len(out) >= 9 {
+		d.emitOutput(OutputState{
+			Flags:         OutputFlagLED,
+			PlayerLedMask: out[8],
+		})
+	}
+	d.enqueueResponse(commandHeader(0x09, seq, sub))
 }
 
 func (d *NS2Pro) handleFlashCommand(seq, sub uint8, out []byte) {

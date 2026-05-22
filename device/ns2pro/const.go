@@ -23,7 +23,13 @@ const (
 	InputReportSize  = 64
 	OutputReportSize = 64
 	InputWireSize    = 27
-	OutputWireSize   = 32
+	OutputRumbleSize = 32
+	OutputWireSize   = 34
+)
+
+const (
+	OutputFlagRumble = 0x01
+	OutputFlagLED    = 0x02
 )
 
 const (

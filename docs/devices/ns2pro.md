@@ -29,9 +29,11 @@ gyro/accelerometer data, and HD rumble output.
 
     ### Feedback
 
-    - 32-byte packets:
+    - 34-byte packets:
         - `LeftRumble`: 16 bytes copied from HID output report `0x02`
         - `RightRumble`: 16 bytes copied from HID output report `0x02`
+        - `Flags`: bit 0 = rumble update, bit 1 = player LED update
+        - `PlayerLedMask`: SDL/Steam player LED mask from bulk command `0x09/0x07`
 
     ## Notes
 

@@ -45,7 +45,10 @@ NS2PRO_PID = 0x2069
 DEFAULT_CACHE_FILE = Path.home() / ".viiper" / "ns2pro_ble_device.json"
 
 INPUT_WIRE_SIZE = 27
-OUTPUT_WIRE_SIZE = 32
+OUTPUT_WIRE_SIZE = 34
+OUTPUT_FLAG_RUMBLE = 0x01
+OUTPUT_FLAG_LED = 0x02
+DEFAULT_LED_PATTERN = 0x06
 
 STICK_MIN = 0x0000
 STICK_CENTER = 0x0800
@@ -228,6 +231,16 @@ class NS2ProInput:
     external_power: bool = True
 
 
+@dataclass(frozen=True)
+class StickCalibration:
+    center_x: int
+    center_y: int
+    max_x: int
+    max_y: int
+    min_x: int
+    min_y: int
+
+
 def clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
@@ -252,12 +265,48 @@ def pack_input_state(state: NS2ProInput) -> bytes:
     )
 
 
+def unpack_feedback_packet(packet: bytes | bytearray | memoryview) -> tuple[bytes, bytes, int, int]:
+    if len(packet) < OUTPUT_WIRE_SIZE:
+        raise ValueError("short NS2Pro feedback packet")
+    return bytes(packet[0:16]), bytes(packet[16:32]), packet[32], packet[33]
+
+
 def unpack_stick12(data: bytes | bytearray | memoryview) -> tuple[int, int]:
     if len(data) < 3:
         raise ValueError("12-bit stick data requires 3 bytes")
     x = data[0] | ((data[1] & 0x0F) << 8)
     y = (data[1] >> 4) | (data[2] << 4)
     return x, y
+
+
+def unpack_stick_calibration(data: bytes | bytearray | memoryview) -> StickCalibration:
+    if len(data) < 9:
+        raise ValueError("stick calibration requires 9 bytes")
+    center_x, center_y = unpack_stick12(data[0:3])
+    max_x, max_y = unpack_stick12(data[3:6])
+    min_x, min_y = unpack_stick12(data[6:9])
+    return StickCalibration(center_x, center_y, max_x, max_y, min_x, min_y)
+
+
+def normalize_axis(value: int, center: int, positive_span: int, negative_span: int) -> int:
+    if value >= center:
+        if positive_span <= 0:
+            return STICK_CENTER
+        scaled = STICK_CENTER + round((value - center) * (STICK_MAX - STICK_CENTER) / positive_span)
+    else:
+        if negative_span <= 0:
+            return STICK_CENTER
+        scaled = STICK_CENTER - round((center - value) * (STICK_CENTER - STICK_MIN) / negative_span)
+    return clamp(scaled, STICK_MIN, STICK_MAX)
+
+
+def normalize_stick(x: int, y: int, calibration: StickCalibration | None) -> tuple[int, int]:
+    if calibration is None:
+        return x, y
+    return (
+        normalize_axis(x, calibration.center_x, calibration.max_x, calibration.min_x),
+        normalize_axis(y, calibration.center_y, calibration.max_y, calibration.min_y),
+    )
 
 
 def map_common_buttons(raw: bytes | bytearray | memoryview) -> int:
@@ -316,13 +365,19 @@ def map_common_buttons(raw: bytes | bytearray | memoryview) -> int:
     return buttons
 
 
-def parse_common_report(data: bytes | bytearray) -> NS2ProInput | None:
+def parse_common_report(
+    data: bytes | bytearray,
+    primary_stick_calibration: StickCalibration | None = None,
+    secondary_stick_calibration: StickCalibration | None = None,
+) -> NS2ProInput | None:
     if len(data) < 0x10:
         return None
 
     buttons = map_common_buttons(data[0x04:0x08])
     lx, ly = unpack_stick12(data[0x0A:0x0D])
     rx, ry = unpack_stick12(data[0x0D:0x10])
+    lx, ly = normalize_stick(lx, ly, primary_stick_calibration)
+    rx, ry = normalize_stick(rx, ry, secondary_stick_calibration)
 
     voltage = struct.unpack_from("<H", data, 0x1F)[0] if len(data) >= 0x21 else 3800
     charging_state = data[0x21] if len(data) > 0x21 else 0x20
@@ -360,6 +415,8 @@ class BLEController:
         self.latest_input: NS2ProInput | None = None
         self.command_event = asyncio.Event()
         self.command_response = b""
+        self.primary_stick_calibration: StickCalibration | None = None
+        self.secondary_stick_calibration: StickCalibration | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -409,6 +466,8 @@ class BLEController:
         LOG.info("Initializing BLE input notifications")
         await self.client.write_gatt_char(BLE_INIT_WRITE, b"\x01\x00", response=True)
         await self.client.start_notify(BLE_COMMAND_RESPONSE, self._on_command_response)
+        await self.set_player_leds(DEFAULT_LED_PATTERN)
+        await self.read_stick_calibration()
         await self.configure_features(0xFF)
         await self.enable_features(self.feature_flags)
 
@@ -497,6 +556,16 @@ class BLEController:
         except Exception as exc:
             LOG.debug("BLE rumble write failed: %s", exc)
 
+    async def set_player_leds(self, led_mask: int) -> None:
+        if not self.is_connected:
+            return
+        payload = bytes([led_mask & 0xFF]) + b"\x00" * 7
+        try:
+            await self.send_command(controller_command(0x09, 0x07, payload))
+            LOG.debug("Set BLE player LEDs mask=0x%02X", led_mask & 0xFF)
+        except Exception as exc:
+            LOG.debug("BLE player LED write failed: %s", exc)
+
     async def send_command(self, command: bytes) -> bytes:
         if self.client is None:
             raise RuntimeError("BLE client is not connected")
@@ -509,6 +578,42 @@ class BLEController:
             LOG.warning("Command timeout: %s", command.hex())
         return self.command_response
 
+    async def read_spi_memory(self, address: int, size: int) -> bytes:
+        payload = bytes([size & 0xFF, 0x7E, 0x00, 0x00]) + struct.pack("<I", address & 0xFFFFFFFF)
+        response = await self.send_command(controller_command(0x02, 0x04, payload))
+        data = controller_response_payload(response, 0x02, 0x04)
+        if len(data) < 8:
+            raise RuntimeError(f"short SPI read response for 0x{address:06X}: {data.hex()}")
+        data_len = data[0]
+        read_address = struct.unpack_from("<I", data, 4)[0]
+        if read_address != address:
+            raise RuntimeError(f"SPI read address mismatch: got 0x{read_address:06X}, expected 0x{address:06X}")
+        return data[8 : 8 + data_len]
+
+    async def read_stick_calibration(self) -> None:
+        try:
+            primary_block = await self.read_spi_memory(0x13080, 0x40)
+            secondary_block = await self.read_spi_memory(0x130C0, 0x40)
+            primary = unpack_stick_calibration(primary_block[0x28:0x31])
+            secondary = unpack_stick_calibration(secondary_block[0x28:0x31])
+
+            try:
+                user_block = await self.read_spi_memory(0x1FC040, 0x40)
+                if user_block[0x00:0x02] == b"\xA2\xB2":
+                    primary = unpack_stick_calibration(user_block[0x02:0x0B])
+                if user_block[0x20:0x22] == b"\xA2\xB2":
+                    secondary = unpack_stick_calibration(user_block[0x22:0x2B])
+            except Exception as exc:
+                LOG.debug("Could not read user stick calibration: %s", exc)
+
+            self.primary_stick_calibration = primary
+            self.secondary_stick_calibration = secondary
+            LOG.info("Loaded stick calibration primary=%s secondary=%s", primary, secondary)
+        except Exception as exc:
+            self.primary_stick_calibration = None
+            self.secondary_stick_calibration = None
+            LOG.warning("Could not load stick calibration; using raw stick values: %s", exc)
+
     async def configure_features(self, flags: int) -> None:
         await self.send_command(controller_command(0x0C, 0x02, bytes([flags, 0, 0, 0])))
 
@@ -520,7 +625,7 @@ class BLEController:
         self.command_event.set()
 
     def _on_input_report(self, _sender, data: bytearray) -> None:
-        parsed = parse_common_report(data)
+        parsed = parse_common_report(data, self.primary_stick_calibration, self.secondary_stick_calibration)
         if parsed is not None:
             self.latest_input = parsed
 
@@ -692,9 +797,13 @@ class Bridge:
                 buf += data
                 while len(buf) >= OUTPUT_WIRE_SIZE:
                     packet, buf = buf[:OUTPUT_WIRE_SIZE], buf[OUTPUT_WIRE_SIZE:]
-                    left, right = packet[:16], packet[16:32]
-                    if any(left) or any(right):
+                    left, right, flags, led_mask = unpack_feedback_packet(packet)
+                    if flags & OUTPUT_FLAG_RUMBLE and (any(left) or any(right)):
+                        LOG.debug("Received rumble feedback left0=0x%02X right0=0x%02X", left[0], right[0])
                         await self.controller.send_rumble(left, right)
+                    if flags & OUTPUT_FLAG_LED:
+                        LOG.debug("Received player LED feedback mask=0x%02X", led_mask)
+                        await self.controller.set_player_leds(led_mask)
             except asyncio.CancelledError:
                 raise
             except BlockingIOError:
@@ -756,6 +865,17 @@ def run_self_test() -> None:
     assert struct.unpack_from("<h", packed, 12)[0] == -1
 
     assert unpack_stick12(bytes([0x23, 0x61, 0x45])) == (0x123, 0x456)
+    calibration = StickCalibration(center_x=2000, center_y=2100, max_x=500, max_y=600, min_x=700, min_y=800)
+    assert normalize_stick(2500, 2700, calibration) == (STICK_MAX, STICK_MAX)
+    assert normalize_stick(1300, 1300, calibration) == (STICK_MIN, STICK_MIN)
+    assert normalize_stick(2000, 2100, calibration) == (STICK_CENTER, STICK_CENTER)
+
+    feedback = bytes(range(32)) + bytes([OUTPUT_FLAG_RUMBLE | OUTPUT_FLAG_LED, 0x06])
+    left, right, flags, led_mask = unpack_feedback_packet(feedback)
+    assert left == bytes(range(16))
+    assert right == bytes(range(16, 32))
+    assert flags == (OUTPUT_FLAG_RUMBLE | OUTPUT_FLAG_LED)
+    assert led_mask == 0x06
 
     assert map_common_buttons(bytes([0xCC, 0x7F, 0xCF, 0x13])) == (
         BTN_A

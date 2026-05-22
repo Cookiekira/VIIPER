@@ -239,13 +239,14 @@ func TestRumbleOutput(t *testing.T) {
 	dev.HandleTransfer(1, usbip.DirOut, packet)
 
 	require.True(t, called)
+	assert.Equal(t, byte(OutputFlagRumble), got.Flags)
 	for i := 0; i < 16; i++ {
 		assert.Equal(t, byte(i), got.LeftRumble[i])
 		assert.Equal(t, byte(0x80+i), got.RightRumble[i])
 	}
 
 	called = false
-	payload := make([]byte, OutputWireSize)
+	payload := make([]byte, OutputRumbleSize)
 	for i := 0; i < 16; i++ {
 		payload[i] = byte(0x40 + i)
 		payload[16+i] = byte(0xC0 + i)
@@ -253,8 +254,29 @@ func TestRumbleOutput(t *testing.T) {
 	_, handled := dev.HandleControl(0x21, 0x09, 0x0202, 0, 0, payload)
 	require.True(t, handled)
 	require.True(t, called)
+	assert.Equal(t, byte(OutputFlagRumble), got.Flags)
 	assert.Equal(t, byte(0x40), got.LeftRumble[0])
 	assert.Equal(t, byte(0xC0), got.RightRumble[0])
+}
+
+func TestPlayerLEDOutput(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+
+	var got OutputState
+	called := false
+	dev.SetOutputCallback(func(out OutputState) {
+		got = out
+		called = true
+	})
+
+	dev.HandleTransfer(2, usbip.DirOut, []byte{0x09, 0x91, 0x12, 0x07, 0x00, 0x08, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00})
+	resp := dev.HandleTransfer(2, usbip.DirIn, nil)
+
+	require.True(t, called)
+	assert.Equal(t, byte(OutputFlagLED), got.Flags)
+	assert.Equal(t, byte(0x06), got.PlayerLedMask)
+	assert.Equal(t, []byte{0x09, 0x01, 0x12, 0x07}, resp[:4])
 }
 
 func TestMicrosoftOS10WinUSBDescriptor(t *testing.T) {
@@ -382,6 +404,7 @@ func TestStreamInputAndRumble(t *testing.T) {
 	require.NoError(t, err)
 	var out OutputState
 	require.NoError(t, out.UnmarshalBinary(outBuf[:]))
+	assert.Equal(t, byte(OutputFlagRumble), out.Flags)
 	assert.Equal(t, byte(0x10), out.LeftRumble[0])
 	assert.Equal(t, byte(0x90), out.RightRumble[0])
 }
